@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{ title }}</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f0e8;
+      --paper: #fffaf1;
+      --ink: #1e1a17;
+      --accent: #155e63;
+      --muted: #6b6258;
+      --line: #d7cfc3;
+    }
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      background: radial-gradient(circle at top, #fff7e8 0%, var(--bg) 55%, #ece4d7 100%);
+      color: var(--ink);
+    }
+    main {
+      max-width: 960px;
+      margin: 32px auto;
+      padding: 32px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      box-shadow: 0 20px 60px rgba(42, 31, 18, 0.08);
+    }
+    h1, h2, h3 {
+      color: var(--accent);
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 16px 0;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 8px 10px;
+      text-align: left;
+    }
+    code {
+      background: rgba(21, 94, 99, 0.08);
+      padding: 2px 6px;
+    }
+    ul {
+      padding-left: 20px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    {{ body | safe }}
+  </main>
+</body>
+</html>

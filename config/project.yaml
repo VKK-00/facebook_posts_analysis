@@ -1,0 +1,78 @@
+project_name: facebook_posts_analysis_template
+
+page:
+  url: "https://www.facebook.com/your-target-page/"
+  page_id: null
+  page_name: "Target Page"
+
+date_range:
+  start: "2026-01-01"
+  end: "2026-02-28"
+
+collector:
+  mode: "web"
+  multi_pass_runs: 3
+  wait_between_passes_seconds: 2
+  meta_api:
+    enabled: false
+    api_version: "v25.0"
+    base_url: "https://graph.facebook.com"
+    access_token: null
+    page_size: 25
+    timeout_seconds: 30
+    max_retries: 3
+  public_web:
+    enabled: true
+    headless: true
+    browser_channel: null
+    max_scrolls: 12
+    wait_after_scroll_ms: 2000
+    timeout_seconds: 30
+    authenticated_browser:
+      enabled: false
+      browser: "chrome"
+      user_data_dir: null
+      profile_directory: "Default"
+      copy_profile: true
+      temp_root_dir: null
+
+sides:
+  - side_id: "target_actor"
+    name: "Target Actor"
+    aliases: ["Example Name", "Example Alias"]
+    support_keywords: ["support target actor", "for target actor"]
+    oppose_keywords: ["oppose target actor", "against target actor"]
+
+analysis:
+  languages: ["ru", "uk", "en"]
+  min_cluster_size: 2
+  min_samples: 1
+  exemplar_count: 3
+  batch_size: 25
+  max_items_per_item_type: null
+
+normalization:
+  merge_recent_runs: 4
+
+providers:
+  embeddings:
+    kind: "auto"
+    base_url: null
+    api_key: null
+    model: "text-embedding-3-small"
+    dimension: 256
+    timeout_seconds: 45
+  llm:
+    kind: "auto"
+    base_url: null
+    api_key: null
+    model: "gpt-4o-mini"
+    temperature: 0
+    timeout_seconds: 60
+
+paths:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  review_dir: "review"
+  reports_dir: "reports"
+  database_path: "data/processed/facebook_posts_analysis.duckdb"

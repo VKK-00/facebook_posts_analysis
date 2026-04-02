@@ -1,0 +1,17 @@
+__pycache__/
+.pytest_cache/
+.venv/
+*.pyc
+*.pyo
+*.pyd
+build/
+dist/
+.coverage
+htmlcov/
+
+data/raw/
+data/processed/
+reports/
+review/
+!review/.gitkeep
+config/project.local.yaml

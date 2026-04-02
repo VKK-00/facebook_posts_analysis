@@ -1,0 +1,107 @@
+{
+  "run_id": "20260402T120000Z",
+  "collected_at": "2026-04-02T12:00:00+00:00",
+  "collector": "meta_api",
+  "mode": "hybrid",
+  "status": "success",
+  "fallback_used": false,
+  "warnings": [],
+  "cursors": {
+    "feed_after": "cursor-123"
+  },
+  "page": {
+    "page_id": "page_1",
+    "page_name": "Example Page",
+    "page_url": "https://www.facebook.com/example-page",
+    "about": "Example page for tests",
+    "followers_count": 1234,
+    "fan_count": 1200,
+    "source_collector": "meta_api",
+    "raw_path": "data/raw/20260402T120000Z/api_page/page_metadata.json"
+  },
+  "posts": [
+    {
+      "post_id": "page_1_post_1",
+      "page_id": "page_1",
+      "created_at": "2026-03-30T08:00:00+00:00",
+      "message": "We stand with Actor A and support the reform package.",
+      "permalink": "https://facebook.com/example/posts/1",
+      "reactions": 14,
+      "shares": 2,
+      "comments_count": 2,
+      "source_collector": "meta_api",
+      "raw_path": "data/raw/20260402T120000Z/api_posts/page_1_post_1.json",
+      "author": {
+        "author_id": "page_1",
+        "name": "Example Page",
+        "profile_url": "https://www.facebook.com/example-page"
+      },
+      "media_refs": [
+        {
+          "media_id": "page_1_post_1:media:1",
+          "owner_post_id": "page_1_post_1",
+          "media_type": "photo",
+          "title": "Main visual",
+          "url": "https://example.com/media/1",
+          "preview_url": "https://example.com/media/1-preview"
+        }
+      ],
+      "comments": [
+        {
+          "comment_id": "comment_1",
+          "parent_post_id": "page_1_post_1",
+          "parent_comment_id": null,
+          "created_at": "2026-03-30T09:00:00+00:00",
+          "message": "I support Actor A on this issue.",
+          "permalink": "https://facebook.com/example/posts/1?comment_id=1",
+          "reactions": 4,
+          "source_collector": "meta_api",
+          "depth": 0,
+          "raw_path": "data/raw/20260402T120000Z/api_comment_items/comment_1.json",
+          "author": {
+            "author_id": "user_1",
+            "name": "Supportive User",
+            "profile_url": null
+          }
+        },
+        {
+          "comment_id": "comment_1_reply_1",
+          "parent_post_id": "page_1_post_1",
+          "parent_comment_id": "comment_1",
+          "created_at": "2026-03-30T09:30:00+00:00",
+          "message": "No, this is wrong and I oppose Actor A.",
+          "permalink": "https://facebook.com/example/posts/1?comment_id=2",
+          "reactions": 2,
+          "source_collector": "meta_api",
+          "depth": 1,
+          "raw_path": "data/raw/20260402T120000Z/api_comment_items/comment_1_reply_1.json",
+          "author": {
+            "author_id": "user_2",
+            "name": "Opposing User",
+            "profile_url": null
+          }
+        }
+      ]
+    },
+    {
+      "post_id": "page_1_post_2",
+      "page_id": "page_1",
+      "created_at": "2026-03-31T10:00:00+00:00",
+      "message": "Neutral update in English about policy implementation.",
+      "permalink": "https://facebook.com/example/posts/2",
+      "reactions": 3,
+      "shares": 0,
+      "comments_count": 0,
+      "source_collector": "meta_api",
+      "raw_path": "data/raw/20260402T120000Z/api_posts/page_1_post_2.json",
+      "author": {
+        "author_id": "page_1",
+        "name": "Example Page",
+        "profile_url": "https://www.facebook.com/example-page"
+      },
+      "media_refs": [],
+      "comments": []
+    }
+  ]
+}
+

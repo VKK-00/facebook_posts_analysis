@@ -1,0 +1,99 @@
+# {{ title }}
+
+Run ID: `{{ run_id }}`
+
+Source snapshot:
+- Page: `{{ page_name }}`
+- Posts collected: `{{ post_count }}`
+- Comments collected: `{{ comment_count }}`
+- Source runs merged: `{{ source_run_count }}`
+- Embeddings provider: `{{ providers.get("embedding_provider", "n/a") }}`
+- LLM provider: `{{ providers.get("llm_provider", "n/a") }}`
+
+{% if source_run_ids %}
+Source runs:
+{% for source_run_id in source_run_ids %}
+- `{{ source_run_id }}`
+{% endfor %}
+{% endif %}
+
+{% if warnings %}
+## Data Quality Warnings
+{% for warning in warnings %}
+- {{ warning }}
+{% endfor %}
+{% endif %}
+
+## Global Support By Side
+| Side | Support | Oppose | Neutral | Unclear | Support Ratio | Net Support |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+{% for row in global_support %}
+| `{{ row.side_id }}` | {{ row.support_count }} | {{ row.oppose_count }} | {{ row.neutral_count }} | {{ row.unclear_count }} | {{ "%.2f"|format(row.support_ratio) }} | {{ row.net_support }} |
+{% endfor %}
+
+## Coverage Gaps
+{% if coverage_gaps %}
+{% for row in coverage_gaps %}
+- Post `{{ row.post_id }}`: visible={{ row.comments_count }}, extracted={{ row.extracted_comment_count }}, gap={{ row.comment_gap }}
+  {{ row.post_excerpt }}
+{% endfor %}
+{% else %}
+- No major visibility gaps detected between visible comment counters and extracted comment texts.
+{% endif %}
+
+## Reply Depth
+| Depth | Comment Count |
+| --- | ---: |
+{% for row in reply_depth_summary %}
+| `{{ row.depth }}` | {{ row.count }} |
+{% endfor %}
+
+## Top Post Narratives
+{% for cluster in post_clusters %}
+- `{{ cluster.cluster_id }}`: **{{ cluster.label }}** ({{ cluster.member_count }} items)
+  {{ cluster.description }}
+{% endfor %}
+
+## Top Comment Narratives
+{% for cluster in comment_clusters %}
+- `{{ cluster.cluster_id }}`: **{{ cluster.label }}** ({{ cluster.member_count }} items)
+  {{ cluster.description }}
+{% endfor %}
+
+## Exemplar Quotes
+{% for quote in exemplar_quotes %}
+- `{{ quote.cluster_id }}` / **{{ quote.label }}**: {{ quote.text }}
+{% endfor %}
+
+## Top Supportive Comments
+{% if top_supportive_comments %}
+{% for row in top_supportive_comments %}
+- `{{ row.comment_id }}` / side `{{ row.side_id }}` / confidence={{ "%.2f"|format(row.confidence) }} / depth={{ row.depth }}
+  {{ row.text }}
+{% endfor %}
+{% else %}
+- No high-confidence supportive comments were labeled for the configured sides.
+{% endif %}
+
+## Top Critical Comments
+{% if top_critical_comments %}
+{% for row in top_critical_comments %}
+- `{{ row.comment_id }}` / side `{{ row.side_id }}` / confidence={{ "%.2f"|format(row.confidence) }} / depth={{ row.depth }}
+  {{ row.text }}
+{% endfor %}
+{% else %}
+- No high-confidence critical comments were labeled for the configured sides.
+{% endif %}
+
+## High Conflict Threads
+{% for thread in high_conflict_threads %}
+- Post `{{ thread.post_id }}` / side `{{ thread.side_id }}`: support={{ thread.support_count }}, oppose={{ thread.oppose_count }}, conflict={{ thread.conflict_score }}
+  {{ thread.post_excerpt }}
+{% endfor %}
+
+## Language Mix
+| Item Type | Language | Count |
+| --- | --- | ---: |
+{% for row in language_mix %}
+| `{{ row.item_type }}` | `{{ row.language }}` | {{ row.count }} |
+{% endfor %}
