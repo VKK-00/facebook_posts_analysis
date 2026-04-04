@@ -1,6 +1,8 @@
 # Facebook Posts Analysis
 
-Local-first Python pipeline for collecting Facebook posts and comments, then analyzing:
+Local-first Python pipeline for collecting Facebook posts and comments, then analyzing narratives, stance, and support.
+
+The project includes:
 
 - narrative clusters
 - stance toward selected sides or actors

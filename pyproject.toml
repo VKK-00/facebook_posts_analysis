@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "facebook-posts-analysis"
 version = "0.1.0"
-description = "Local-first pipeline for collecting Facebook page posts/comments and analyzing narratives and stance."
+description = "Local-first Python pipeline for collecting Facebook posts and comments, then analyzing narratives, stance, and support."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Proprietary" }
@@ -43,4 +43,3 @@ packages = ["src/facebook_posts_analysis"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
-
