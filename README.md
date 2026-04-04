@@ -216,3 +216,7 @@ The test suite currently covers:
 - Some posts may still show a visible comment counter while not yielding full text comments in the DOM.
 - API-first collection depends on the current Meta permission model and the target object type.
 - Heuristic fallback providers keep the pipeline usable offline, but proper embeddings and LLM providers will produce better analytical quality.
+
+## License
+
+MIT. See `LICENSE`.
