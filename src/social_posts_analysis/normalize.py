@@ -6,10 +6,10 @@ from typing import Any, Literal, cast
 import duckdb
 import polars as pl
 
-from facebook_posts_analysis.config import ProjectConfig
-from facebook_posts_analysis.contracts import CollectionManifest, CommentSnapshot, PageSnapshot, PostSnapshot
-from facebook_posts_analysis.paths import ProjectPaths
-from facebook_posts_analysis.utils import read_json
+from social_posts_analysis.config import ProjectConfig
+from social_posts_analysis.contracts import CollectionManifest, CommentSnapshot, PostSnapshot, SourceSnapshot
+from social_posts_analysis.paths import ProjectPaths
+from social_posts_analysis.utils import read_json
 
 
 class NormalizationService:
@@ -24,7 +24,8 @@ class NormalizationService:
     TABLE_SCHEMAS = {
         "posts": {
             "post_id": pl.String,
-            "page_id": pl.String,
+            "platform": pl.String,
+            "source_id": pl.String,
             "author_id": pl.String,
             "created_at": pl.String,
             "message": pl.String,
@@ -32,20 +33,30 @@ class NormalizationService:
             "reactions": pl.Int64,
             "shares": pl.Int64,
             "comments_count": pl.Int64,
+            "views": pl.Int64,
+            "forwards": pl.Int64,
+            "reply_count": pl.Int64,
+            "has_media": pl.Boolean,
+            "media_type": pl.String,
+            "reaction_breakdown_json": pl.String,
             "source_collector": pl.String,
             "raw_path": pl.String,
             "run_id": pl.String,
         },
         "comments": {
             "comment_id": pl.String,
+            "platform": pl.String,
             "parent_post_id": pl.String,
             "parent_comment_id": pl.String,
+            "reply_to_message_id": pl.String,
+            "thread_root_post_id": pl.String,
             "author_id": pl.String,
             "created_at": pl.String,
             "message": pl.String,
             "depth": pl.Int64,
             "permalink": pl.String,
             "reactions": pl.Int64,
+            "reaction_breakdown_json": pl.String,
             "source_collector": pl.String,
             "raw_path": pl.String,
             "run_id": pl.String,
@@ -54,6 +65,8 @@ class NormalizationService:
             "comment_id": pl.String,
             "parent_post_id": pl.String,
             "parent_comment_id": pl.String,
+            "reply_to_message_id": pl.String,
+            "thread_root_post_id": pl.String,
             "depth": pl.Int64,
             "run_id": pl.String,
         },
@@ -83,8 +96,12 @@ class NormalizationService:
             "warning_count": pl.Int64,
             "post_count": pl.Int64,
             "comment_count": pl.Int64,
-            "page_id": pl.String,
-            "page_name": pl.String,
+            "platform": pl.String,
+            "source_id": pl.String,
+            "source_name": pl.String,
+            "source_type": pl.String,
+            "discussion_linked": pl.Boolean,
+            "filtered_service_message_count": pl.Int64,
             "source_run_count": pl.Int64,
             "source_run_ids": pl.List(pl.String),
         },
@@ -99,7 +116,7 @@ class NormalizationService:
         if not resolved_run_id:
             raise RuntimeError("No collection runs found to normalize.")
 
-        source_run_ids = self._select_source_run_ids(resolved_run_id)
+        source_run_ids = self._resolve_source_run_ids(resolved_run_id)
         manifests = self._load_manifests(source_run_ids)
         manifest = self._merge_manifests(resolved_run_id, manifests)
 
@@ -109,13 +126,13 @@ class NormalizationService:
         authors: list[dict[str, Any]] = []
         media_refs: list[dict[str, Any]] = []
 
-        if manifest.page.page_id:
+        if manifest.source.source_id:
             authors.append(
                 {
-                    "author_id": manifest.page.page_id,
-                    "name": manifest.page.page_name,
-                    "profile_url": manifest.page.page_url,
-                    "source_collector": manifest.page.source_collector,
+                    "author_id": manifest.source.source_id,
+                    "name": manifest.source.source_name,
+                    "profile_url": manifest.source.source_url,
+                    "source_collector": manifest.source.source_collector,
                     "run_id": manifest.run_id,
                 }
             )
@@ -124,7 +141,8 @@ class NormalizationService:
             posts_records.append(
                 {
                     "post_id": post.post_id,
-                    "page_id": post.page_id,
+                    "platform": post.platform,
+                    "source_id": post.source_id,
                     "author_id": post.author.author_id if post.author else None,
                     "created_at": post.created_at,
                     "message": post.message,
@@ -132,6 +150,12 @@ class NormalizationService:
                     "reactions": post.reactions,
                     "shares": post.shares,
                     "comments_count": post.comments_count,
+                    "views": post.views,
+                    "forwards": post.forwards,
+                    "reply_count": post.reply_count,
+                    "has_media": post.has_media,
+                    "media_type": post.media_type,
+                    "reaction_breakdown_json": post.reaction_breakdown_json,
                     "source_collector": post.source_collector,
                     "raw_path": post.raw_path,
                     "run_id": manifest.run_id,
@@ -163,14 +187,18 @@ class NormalizationService:
                 comments_records.append(
                     {
                         "comment_id": comment.comment_id,
+                        "platform": comment.platform,
                         "parent_post_id": comment.parent_post_id,
                         "parent_comment_id": comment.parent_comment_id,
+                        "reply_to_message_id": comment.reply_to_message_id,
+                        "thread_root_post_id": comment.thread_root_post_id,
                         "author_id": comment.author.author_id if comment.author else None,
                         "created_at": comment.created_at,
                         "message": comment.message,
                         "depth": comment.depth,
                         "permalink": comment.permalink,
                         "reactions": comment.reactions,
+                        "reaction_breakdown_json": comment.reaction_breakdown_json,
                         "source_collector": comment.source_collector,
                         "raw_path": comment.raw_path,
                         "run_id": manifest.run_id,
@@ -181,6 +209,8 @@ class NormalizationService:
                         "comment_id": comment.comment_id,
                         "parent_post_id": comment.parent_post_id,
                         "parent_comment_id": comment.parent_comment_id,
+                        "reply_to_message_id": comment.reply_to_message_id,
+                        "thread_root_post_id": comment.thread_root_post_id,
                         "depth": comment.depth,
                         "run_id": manifest.run_id,
                     }
@@ -207,8 +237,12 @@ class NormalizationService:
                 "warning_count": len(manifest.warnings),
                 "post_count": len(posts_records),
                 "comment_count": len(comments_records),
-                "page_id": manifest.page.page_id,
-                "page_name": manifest.page.page_name,
+                "platform": manifest.source.platform,
+                "source_id": manifest.source.source_id,
+                "source_name": manifest.source.source_name,
+                "source_type": manifest.source.source_type,
+                "discussion_linked": manifest.source.discussion_linked,
+                "filtered_service_message_count": manifest.source.filtered_service_message_count,
                 "source_run_count": len(source_run_ids),
                 "source_run_ids": source_run_ids,
             }
@@ -229,7 +263,15 @@ class NormalizationService:
             "tables": {name: str(path) for name, path in outputs.items()},
         }
 
-    def _select_source_run_ids(self, resolved_run_id: str) -> list[str]:
+    def _resolve_source_run_ids(self, resolved_run_id: str) -> list[str]:
+        configured = [run_id for run_id in self.config.normalization.source_run_ids if run_id]
+        if configured:
+            available = set(self.paths.list_run_ids())
+            missing = [run_id for run_id in configured if run_id not in available]
+            if missing:
+                raise RuntimeError(f"Configured source_run_ids are missing raw snapshots: {', '.join(missing)}")
+            return configured
+
         available_run_ids = self.paths.list_run_ids()
         if resolved_run_id not in available_run_ids:
             raise RuntimeError(f"Run {resolved_run_id} does not exist in raw snapshots.")
@@ -251,7 +293,7 @@ class NormalizationService:
                 merged_posts[post.post_id] = self._merge_post_snapshots(merged_posts.get(post.post_id), post)
 
         latest_manifest = manifests[-1]
-        page = self._merge_page_snapshots([manifest.page for manifest in manifests])
+        source = self._merge_source_snapshots([manifest.source for manifest in manifests])
         warnings = list(dict.fromkeys(warning for manifest in manifests for warning in manifest.warnings))
         if len(manifests) > 1:
             warnings.append(f"Merged normalized snapshot from {len(manifests)} collection runs.")
@@ -273,23 +315,31 @@ class NormalizationService:
             fallback_used=any(manifest.fallback_used for manifest in manifests),
             warnings=warnings,
             cursors=latest_manifest.cursors,
-            page=page,
+            source=source,
             posts=posts,
         )
 
     @staticmethod
-    def _merge_page_snapshots(pages: list[PageSnapshot]) -> PageSnapshot:
-        latest_page = pages[-1]
-        merged = latest_page.model_copy(deep=True)
-        for page in reversed(pages[:-1]):
+    def _merge_source_snapshots(sources: list[SourceSnapshot]) -> SourceSnapshot:
+        latest_source = sources[-1]
+        merged = latest_source.model_copy(deep=True)
+        for source in reversed(sources[:-1]):
             merged = merged.model_copy(
                 update={
-                    "page_name": merged.page_name or page.page_name,
-                    "page_url": merged.page_url or page.page_url,
-                    "about": merged.about or page.about,
-                    "followers_count": merged.followers_count or page.followers_count,
-                    "fan_count": merged.fan_count or page.fan_count,
-                    "raw_path": merged.raw_path or page.raw_path,
+                    "source_name": merged.source_name or source.source_name,
+                    "source_url": merged.source_url or source.source_url,
+                    "source_type": merged.source_type or source.source_type,
+                    "about": merged.about or source.about,
+                    "followers_count": merged.followers_count or source.followers_count,
+                    "fan_count": merged.fan_count or source.fan_count,
+                    "discussion_chat_id": merged.discussion_chat_id or source.discussion_chat_id,
+                    "discussion_chat_name": merged.discussion_chat_name or source.discussion_chat_name,
+                    "discussion_linked": merged.discussion_linked if merged.discussion_linked is not None else source.discussion_linked,
+                    "filtered_service_message_count": max(
+                        merged.filtered_service_message_count,
+                        source.filtered_service_message_count,
+                    ),
+                    "raw_path": merged.raw_path or source.raw_path,
                 }
             )
         return merged
@@ -313,6 +363,12 @@ class NormalizationService:
                 "reactions": max(existing.reactions, incoming.reactions),
                 "shares": max(existing.shares, incoming.shares),
                 "comments_count": max(existing.comments_count, incoming.comments_count, len(merged_comments)),
+                "views": self._prefer_numeric_max(existing.views, incoming.views),
+                "forwards": self._prefer_numeric_max(existing.forwards, incoming.forwards),
+                "reply_count": self._prefer_numeric_max(existing.reply_count, incoming.reply_count),
+                "has_media": existing.has_media or incoming.has_media,
+                "media_type": existing.media_type or incoming.media_type,
+                "reaction_breakdown_json": existing.reaction_breakdown_json or incoming.reaction_breakdown_json,
                 "source_collector": incoming.source_collector or existing.source_collector,
                 "raw_path": incoming.raw_path or existing.raw_path,
                 "author": self._select_author(existing.author, incoming.author),
@@ -321,26 +377,33 @@ class NormalizationService:
             }
         )
 
-    def _merge_comment_snapshots(
-        self,
-        existing: CommentSnapshot | None,
-        incoming: CommentSnapshot,
-    ) -> CommentSnapshot:
+    def _merge_comment_snapshots(self, existing: CommentSnapshot | None, incoming: CommentSnapshot) -> CommentSnapshot:
         if existing is None:
             return incoming.model_copy(deep=True)
         return existing.model_copy(
             update={
                 "parent_comment_id": existing.parent_comment_id or incoming.parent_comment_id,
+                "reply_to_message_id": existing.reply_to_message_id or incoming.reply_to_message_id,
+                "thread_root_post_id": existing.thread_root_post_id or incoming.thread_root_post_id,
                 "created_at": existing.created_at or incoming.created_at,
                 "message": incoming.message if len(incoming.message or "") > len(existing.message or "") else existing.message,
                 "permalink": existing.permalink or incoming.permalink,
                 "reactions": max(existing.reactions, incoming.reactions),
+                "reaction_breakdown_json": existing.reaction_breakdown_json or incoming.reaction_breakdown_json,
                 "depth": max(existing.depth, incoming.depth),
                 "source_collector": incoming.source_collector or existing.source_collector,
                 "raw_path": incoming.raw_path or existing.raw_path,
                 "author": self._select_author(existing.author, incoming.author),
             }
         )
+
+    @staticmethod
+    def _prefer_numeric_max(existing: int | None, incoming: int | None) -> int | None:
+        if existing is None:
+            return incoming
+        if incoming is None:
+            return existing
+        return max(existing, incoming)
 
     @staticmethod
     def _select_author(existing: Any, incoming: Any) -> Any:
@@ -391,8 +454,6 @@ class NormalizationService:
         try:
             for table_name, path in table_paths.items():
                 path_str = path.as_posix().replace("'", "''")
-                connection.execute(
-                    f"CREATE OR REPLACE TABLE {table_name} AS SELECT * FROM read_parquet('{path_str}')"
-                )
+                connection.execute(f"CREATE OR REPLACE TABLE {table_name} AS SELECT * FROM read_parquet('{path_str}')")
         finally:
             connection.close()

@@ -1,9 +1,12 @@
-project_name: facebook_posts_analysis_template
+project_name: social_posts_analysis_template
 
-page:
+source:
+  platform: "facebook"
   url: "https://www.facebook.com/example-public-page/"
-  page_id: null
-  page_name: "Example Public Page"
+  source_id: null
+  source_name: "Example Public Page"
+  telegram:
+    discussion_chat_id: null
 
 date_range:
   start: null
@@ -35,6 +38,14 @@ collector:
       profile_directory: "Default"
       copy_profile: true
       temp_root_dir: null
+  telegram_mtproto:
+    enabled: false
+    session_file: null
+    api_id: null
+    api_hash: null
+    page_size: 100
+    timeout_seconds: 30
+    max_retries: 3
 
 sides:
   - side_id: "example_actor"
@@ -53,6 +64,7 @@ analysis:
 
 normalization:
   merge_recent_runs: 1
+  source_run_ids: []
 
 providers:
   embeddings:
@@ -75,4 +87,4 @@ paths:
   processed_dir: "data/processed"
   review_dir: "review"
   reports_dir: "reports"
-  database_path: "data/processed/facebook_posts_analysis.duckdb"
+  database_path: "data/processed/social_posts_analysis.duckdb"

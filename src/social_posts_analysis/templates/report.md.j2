@@ -3,12 +3,30 @@
 Run ID: `{{ run_id }}`
 
 Source snapshot:
-- Page: `{{ page_name }}`
+- Platform: `{{ platform }}`
+- Source: `{{ source_name }}`
+- Source ID: `{{ source_id }}`
+- Source type: `{{ source_type }}`
 - Posts collected: `{{ post_count }}`
 - Comments collected: `{{ comment_count }}`
 - Source runs merged: `{{ source_run_count }}`
 - Embeddings provider: `{{ providers.get("embedding_provider", "n/a") }}`
 - LLM provider: `{{ providers.get("llm_provider", "n/a") }}`
+
+{% if telegram_summary %}
+Telegram metrics:
+- Linked discussion: `{{ telegram_summary.discussion_linked }}`
+- Total views: `{{ telegram_summary.total_views }}`
+- Total forwards: `{{ telegram_summary.total_forwards }}`
+- Total replies: `{{ telegram_summary.total_reply_count }}`
+- Filtered service messages: `{{ telegram_summary.filtered_service_message_count }}`
+{% if telegram_summary.reaction_breakdown %}
+- Reaction breakdown:
+{% for row in telegram_summary.reaction_breakdown %}
+  - `{{ row.reaction }}`: {{ row.count }}
+{% endfor %}
+{% endif %}
+{% endif %}
 
 {% if source_run_ids %}
 Source runs:

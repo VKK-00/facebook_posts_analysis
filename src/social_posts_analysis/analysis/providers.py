@@ -8,7 +8,7 @@ from typing import Any, Protocol
 import httpx
 import numpy as np
 
-from facebook_posts_analysis.config import EmbeddingProviderConfig, LLMProviderConfig, SideConfig
+from social_posts_analysis.config import EmbeddingProviderConfig, LLMProviderConfig, SideConfig
 
 
 def _join_api_url(base_url: str, suffix: str) -> str:

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from facebook_posts_analysis.collectors.base import BaseCollector, CollectorUnavailableError
-from facebook_posts_analysis.contracts import CollectionManifest, PageSnapshot
-from facebook_posts_analysis.pipeline import CollectionService
-from facebook_posts_analysis.utils import utc_now_iso
+from social_posts_analysis.collectors.base import BaseCollector, CollectorUnavailableError
+from social_posts_analysis.contracts import CollectionManifest, SourceSnapshot
+from social_posts_analysis.pipeline import CollectionService
+from social_posts_analysis.utils import utc_now_iso
 
 
 class FailingCollector(BaseCollector):
@@ -22,7 +22,13 @@ class SuccessfulCollector(BaseCollector):
             collected_at=utc_now_iso(),
             collector=self.name,
             mode="hybrid",
-            page=PageSnapshot(page_id="page_1", page_name="Example", source_collector=self.name),
+            source=SourceSnapshot(
+                platform="facebook",
+                source_id="page_1",
+                source_name="Example",
+                source_type="page",
+                source_collector=self.name,
+            ),
             posts=[],
         )
 

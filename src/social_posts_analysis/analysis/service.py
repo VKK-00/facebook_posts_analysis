@@ -6,8 +6,8 @@ from typing import Any, cast
 import duckdb
 import polars as pl
 
-from facebook_posts_analysis.config import ProjectConfig
-from facebook_posts_analysis.paths import ProjectPaths
+from social_posts_analysis.config import ProjectConfig
+from social_posts_analysis.paths import ProjectPaths
 
 from .clustering import NarrativeClusterer
 from .language import LanguageDetector

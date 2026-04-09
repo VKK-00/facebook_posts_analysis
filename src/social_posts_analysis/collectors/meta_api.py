@@ -6,17 +6,17 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from facebook_posts_analysis.config import ProjectConfig
-from facebook_posts_analysis.contracts import (
+from social_posts_analysis.config import ProjectConfig
+from social_posts_analysis.contracts import (
     AuthorSnapshot,
     CollectionManifest,
     CommentSnapshot,
     MediaReference,
-    PageSnapshot,
     PostSnapshot,
+    SourceSnapshot,
 )
-from facebook_posts_analysis.raw_store import RawSnapshotStore
-from facebook_posts_analysis.utils import slugify, utc_now_iso
+from social_posts_analysis.raw_store import RawSnapshotStore
+from social_posts_analysis.utils import slugify, utc_now_iso
 
 from .base import BaseCollector, CollectorUnavailableError
 
@@ -27,6 +27,8 @@ class MetaApiCollector(BaseCollector):
     def __init__(self, config: ProjectConfig) -> None:
         self.config = config
         self.settings = config.collector.meta_api
+        if not self.settings.enabled:
+            raise CollectorUnavailableError("Meta API collector is disabled in config.collector.meta_api.enabled.")
         if not self.settings.access_token:
             raise CollectorUnavailableError(
                 "Meta API collector requires META_ACCESS_TOKEN or collector.meta_api.access_token."
@@ -34,36 +36,38 @@ class MetaApiCollector(BaseCollector):
         self.client = httpx.Client(timeout=self.settings.timeout_seconds)
 
     def collect(self, run_id: str, raw_store: RawSnapshotStore) -> CollectionManifest:
-        page_ref = self.config.page.page_id or self._page_reference_from_url(self.config.page.url or "")
-        page_payload = self._get_json(
-            f"/{page_ref}",
+        source_ref = self.config.source.source_id or self._page_reference_from_url(self.config.source.url or "")
+        source_payload = self._get_json(
+            f"/{source_ref}",
             params={
                 "fields": "id,name,link,about,fan_count,followers_count",
                 "access_token": self.settings.access_token,
             },
         )
-        page_raw_path = raw_store.write_json("api_page", "page_metadata", page_payload)
-        page_snapshot = PageSnapshot(
-            page_id=str(page_payload.get("id", page_ref)),
-            page_name=page_payload.get("name") or self.config.page.page_name,
-            page_url=page_payload.get("link") or self.config.page.url,
-            about=page_payload.get("about"),
-            fan_count=page_payload.get("fan_count"),
-            followers_count=page_payload.get("followers_count"),
+        source_raw_path = raw_store.write_json("api_source", "source_metadata", source_payload)
+        source_snapshot = SourceSnapshot(
+            platform="facebook",
+            source_id=str(source_payload.get("id", source_ref)),
+            source_name=source_payload.get("name") or self.config.source.source_name,
+            source_url=source_payload.get("link") or self.config.source.url,
+            source_type="page",
+            about=source_payload.get("about"),
+            fan_count=source_payload.get("fan_count"),
+            followers_count=source_payload.get("followers_count"),
             source_collector=self.name,
-            raw_path=str(page_raw_path),
+            raw_path=str(source_raw_path),
         )
 
         posts: list[PostSnapshot] = []
         warnings: list[str] = []
         post_cursor = ""
 
-        for feed_payload in self._iter_feed_pages(page_snapshot.page_id, raw_store):
+        for feed_payload in self._iter_feed_pages(source_snapshot.source_id, raw_store):
             if not post_cursor:
                 post_cursor = self._extract_cursor(feed_payload)
             for post_payload in feed_payload.get("data", []):
                 try:
-                    posts.append(self._collect_post(post_payload, page_snapshot.page_id, raw_store))
+                    posts.append(self._collect_post(post_payload, source_snapshot.source_id, raw_store))
                 except httpx.HTTPError as exc:
                     warnings.append(f"Failed to collect comments for post {post_payload.get('id')}: {exc}")
 
@@ -75,11 +79,11 @@ class MetaApiCollector(BaseCollector):
             status="partial" if warnings else "success",
             warnings=warnings,
             cursors={"feed_after": post_cursor} if post_cursor else {},
-            page=page_snapshot,
+            source=source_snapshot,
             posts=posts,
         )
 
-    def _collect_post(self, payload: dict[str, Any], page_id: str, raw_store: RawSnapshotStore) -> PostSnapshot:
+    def _collect_post(self, payload: dict[str, Any], source_id: str, raw_store: RawSnapshotStore) -> PostSnapshot:
         post_id = str(payload["id"])
         comments = self._collect_comments_for_parent(
             parent_id=post_id,
@@ -89,17 +93,20 @@ class MetaApiCollector(BaseCollector):
             raw_store=raw_store,
         )
         attachments = self._extract_media_refs(payload)
-        author_payload = payload.get("from") or {"id": payload.get("id"), "name": self.config.page.page_name}
+        author_payload = payload.get("from") or {"id": payload.get("id"), "name": self.config.source.source_name}
 
         return PostSnapshot(
             post_id=post_id,
-            page_id=page_id,
+            platform="facebook",
+            source_id=source_id,
             created_at=payload.get("created_time"),
             message=payload.get("message"),
             permalink=payload.get("permalink_url"),
             reactions=self._summary_total(payload.get("reactions")),
             shares=(payload.get("shares") or {}).get("count", 0) or 0,
             comments_count=self._summary_total(payload.get("comments")),
+            has_media=bool(attachments),
+            media_type=attachments[0].media_type if attachments else None,
             source_collector=self.name,
             raw_path=str(raw_store.write_json("api_posts", slugify(post_id), payload)),
             author=AuthorSnapshot(
@@ -133,6 +140,7 @@ class MetaApiCollector(BaseCollector):
                 comment_id = str(comment_payload["id"])
                 comment = CommentSnapshot(
                     comment_id=comment_id,
+                    platform="facebook",
                     parent_post_id=parent_post_id,
                     parent_comment_id=parent_comment_id,
                     created_at=comment_payload.get("created_time"),
@@ -166,8 +174,8 @@ class MetaApiCollector(BaseCollector):
                     )
         return comments
 
-    def _iter_feed_pages(self, page_id: str, raw_store: RawSnapshotStore) -> list[dict[str, Any]]:
-        endpoint = f"/{page_id}/feed"
+    def _iter_feed_pages(self, source_id: str, raw_store: RawSnapshotStore) -> list[dict[str, Any]]:
+        endpoint = f"/{source_id}/feed"
         params: dict[str, Any] = {
             "fields": (
                 "id,message,created_time,permalink_url,from,"

@@ -10,16 +10,16 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from facebook_posts_analysis.config import ProjectConfig
-from facebook_posts_analysis.contracts import (
+from social_posts_analysis.config import ProjectConfig
+from social_posts_analysis.contracts import (
     AuthorSnapshot,
     CollectionManifest,
     CommentSnapshot,
-    PageSnapshot,
     PostSnapshot,
+    SourceSnapshot,
 )
-from facebook_posts_analysis.raw_store import RawSnapshotStore
-from facebook_posts_analysis.utils import slugify, stable_id, utc_now_iso
+from social_posts_analysis.raw_store import RawSnapshotStore
+from social_posts_analysis.utils import slugify, stable_id, utc_now_iso
 
 from .base import BaseCollector, CollectorUnavailableError
 
@@ -45,9 +45,9 @@ class PublicWebCollector(BaseCollector):
         warnings: list[str] = [
             "Public web extraction is best-effort and may require selector tuning for the target page."
         ]
-        page_url = self.config.page.url or ""
+        page_url = self.config.source.url or ""
         if not page_url:
-            raise CollectorUnavailableError("Public web collector requires page.url.")
+            raise CollectorUnavailableError("Public web collector requires source.url.")
 
         with sync_playwright() as playwright:
             browser, context, temp_profile_dir, context_warnings = self._open_collection_context(playwright)
@@ -55,7 +55,7 @@ class PublicWebCollector(BaseCollector):
             discovery_browser = browser
             discovery_context = context
             try:
-                page_name = self.config.page.page_name
+                page_name = self.config.source.source_name
                 page_payload: dict[str, Any] | None = None
                 direct_feed_candidates: list[dict[str, Any]] = []
                 plugin_candidates: list[dict[str, Any]] = []
@@ -129,7 +129,7 @@ class PublicWebCollector(BaseCollector):
 
                 page_path = raw_store.write_json("web_page", "page_metadata", page_payload)
 
-                page_id = self.config.page.page_id or stable_id(page_url or "page")
+                page_id = self.config.source.source_id or stable_id(page_url or "page")
                 page_name = page_name or "Facebook Page"
                 posts_by_id: dict[str, PostSnapshot] = {}
                 seen_permalinks: set[str] = set()
@@ -190,10 +190,12 @@ class PublicWebCollector(BaseCollector):
         if not posts:
             warnings.append("No post pages were collected from the public web feed for the configured range.")
 
-        page_snapshot = PageSnapshot(
-            page_id=page_id,
-            page_name=page_name,
-            page_url=self.config.page.url,
+        page_snapshot = SourceSnapshot(
+            platform="facebook",
+            source_id=page_id,
+            source_name=page_name,
+            source_url=self.config.source.url,
+            source_type="page",
             source_collector=self.name,
             raw_path=str(page_path),
         )
@@ -205,7 +207,7 @@ class PublicWebCollector(BaseCollector):
             mode=self.config.collector.mode,
             status="partial" if warnings else "success",
             warnings=warnings,
-            page=page_snapshot,
+            source=page_snapshot,
             posts=posts,
         )
 
@@ -444,7 +446,8 @@ class PublicWebCollector(BaseCollector):
 
         return PostSnapshot(
             post_id=post_id,
-            page_id=page_id,
+            platform="facebook",
+            source_id=page_id,
             created_at=resolved_published_at,
             message=post_text,
             permalink=post_permalink,
@@ -458,6 +461,7 @@ class PublicWebCollector(BaseCollector):
                 int(candidate.get("comments_count") or 0),
                 self._extract_comment_count(payload),
             ),
+            has_media=False,
             source_collector=self.name,
             raw_path=str(raw_path),
             author=AuthorSnapshot(author_id=page_id, name=page_name),
@@ -522,8 +526,10 @@ class PublicWebCollector(BaseCollector):
             comment_id = stable_id(post_id, payload_comment.get("permalink") or comment_text[:160])
             snapshot = CommentSnapshot(
                 comment_id=comment_id,
+                platform="facebook",
                 parent_post_id=post_id,
                 parent_comment_id=parent_comment_id,
+                thread_root_post_id=post_id,
                 created_at=self._parse_post_timestamp(published_hint),
                 message=comment_text,
                 permalink=payload_comment.get("permalink"),
@@ -1067,13 +1073,15 @@ class PublicWebCollector(BaseCollector):
                     candidate.get("published_hint") or "",
                     candidate.get("message") or "",
                 ),
-                page_id=page_id,
+                platform="facebook",
+                source_id=page_id,
                 created_at=published_at,
                 message=candidate.get("message"),
                 permalink=None,
                 reactions=int(candidate.get("reactions") or 0),
                 shares=0,
                 comments_count=int(candidate.get("comments_count") or 0),
+                has_media=False,
                 source_collector=self.name,
                 raw_path=str(raw_path),
                 author=AuthorSnapshot(author_id=page_id, name=page_name),

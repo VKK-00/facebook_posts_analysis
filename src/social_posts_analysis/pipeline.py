@@ -4,14 +4,15 @@ import time
 from pathlib import Path
 from typing import Any
 
-from facebook_posts_analysis.collectors.base import BaseCollector, CollectorUnavailableError
-from facebook_posts_analysis.collectors.meta_api import MetaApiCollector
-from facebook_posts_analysis.collectors.public_web import PublicWebCollector
-from facebook_posts_analysis.config import ProjectConfig
-from facebook_posts_analysis.contracts import CollectionManifest
-from facebook_posts_analysis.paths import ProjectPaths
-from facebook_posts_analysis.raw_store import RawSnapshotStore
-from facebook_posts_analysis.utils import make_run_id
+from social_posts_analysis.collectors.base import BaseCollector, CollectorUnavailableError
+from social_posts_analysis.collectors.meta_api import MetaApiCollector
+from social_posts_analysis.collectors.public_web import PublicWebCollector
+from social_posts_analysis.collectors.telegram_mtproto import TelegramMtprotoCollector
+from social_posts_analysis.config import ProjectConfig
+from social_posts_analysis.contracts import CollectionManifest
+from social_posts_analysis.paths import ProjectPaths
+from social_posts_analysis.raw_store import RawSnapshotStore
+from social_posts_analysis.utils import make_run_id
 
 
 class CollectionService:
@@ -44,7 +45,7 @@ class CollectionService:
         warnings: list[str] = []
         collectors = self._build_collectors()
         if not collectors:
-            raise RuntimeError("No collectors are available for the configured mode.")
+            raise RuntimeError("No collectors are available for the configured platform and mode.")
 
         for index, collector in enumerate(collectors):
             try:
@@ -55,12 +56,15 @@ class CollectionService:
                 return manifest
             except CollectorUnavailableError as exc:
                 warnings.append(f"{collector.__class__.__name__}: {exc}")
-            except Exception as exc:  # pragma: no cover - defensive fallback surface
+            except Exception as exc:  # pragma: no cover
                 warnings.append(f"{collector.__class__.__name__}: {exc}")
 
         raise RuntimeError("All configured collectors failed: " + "; ".join(warnings))
 
     def _build_collectors(self) -> list[BaseCollector]:
+        if self.config.source.platform == "telegram":
+            return [TelegramMtprotoCollector(self.config)]
+
         mode = self.config.collector.mode
         collector_classes: list[type[Any]]
         if mode == "api":
@@ -82,10 +86,7 @@ class CollectionService:
     @staticmethod
     def _write_manifest(run_dir: Path, manifest: CollectionManifest) -> None:
         manifest_path = run_dir / "manifest.json"
-        manifest_path.write_text(
-            manifest.model_dump_json(indent=2),
-            encoding="utf-8",
-        )
+        manifest_path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
 
 
 class PipelineRunner:
@@ -98,9 +99,9 @@ class PipelineRunner:
         collection_manifests = collection_service.run_many(run_id=run_id, passes=self.config.collector.multi_pass_runs)
         collection_manifest = collection_manifests[-1]
 
-        from facebook_posts_analysis.analysis.service import AnalysisService
-        from facebook_posts_analysis.normalize import NormalizationService
-        from facebook_posts_analysis.reporting.service import ReportService, ReviewExportService
+        from social_posts_analysis.analysis.service import AnalysisService
+        from social_posts_analysis.normalize import NormalizationService
+        from social_posts_analysis.reporting.service import ReportService, ReviewExportService
 
         NormalizationService(self.config, self.paths).run(run_id=collection_manifest.run_id)
         AnalysisService(self.config, self.paths).run(run_id=collection_manifest.run_id)

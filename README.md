@@ -1,39 +1,41 @@
-# Facebook Posts Analysis
+# Social Posts Analysis
 
-Local-first Python pipeline for collecting Facebook posts and comments, then analyzing narratives, stance, support, and conflict patterns.
+Local-first Python pipeline for collecting posts and comments from multiple social platforms, then analyzing narratives, stance, support, and conflict patterns.
 
-The project supports two collection paths:
+Current supported platforms:
 
-- Meta API, when the target object and permissions allow it
-- Playwright-based web collection, including reuse of a locally logged-in browser profile
+- Facebook via Meta API or Playwright web collection
+- Telegram via MTProto session access with one channel per run and optional linked discussion chat
 
-Outputs are stored locally and can be reviewed in DuckDB, parquet, CSV, Markdown, and HTML.
+Outputs are stored locally and can be reviewed in DuckDB, parquet, CSV, XLSX, Markdown, and HTML.
 
 ## What The Project Does
 
-- collects posts, comments, and visible replies from Facebook
+- collects posts/messages and comments/replies for one configured source per run
 - stores raw snapshots per run under `data/raw/<run_id>/`
 - normalizes collected data into parquet files and DuckDB tables
 - detects language for `ru`, `uk`, and `en`
 - groups posts and comments into narrative clusters
 - labels stance toward configured sides or actors
-- computes support metrics globally and across several scopes
+- computes support metrics from comment/reply texts
 - exports review files for manual corrections
-- renders Markdown and HTML reports
+- renders Markdown, HTML, CSV, and XLSX reports
 
 Current codebase additions include:
 
-- authenticated browser profile support for the web collector
+- platform-aware `source` model instead of Facebook-only `page` naming
+- Telegram MTProto collector with linked-discussion support
+- authenticated browser profile support for Facebook web collection
 - multi-pass collection runs
 - merged normalized snapshots from several source runs
-- visible reply-depth extraction
+- reply-depth extraction for both Facebook and Telegram discussion trees
 - coverage-gap reporting for posts where visible counters exceed extracted text comments
 
 ## Project Layout
 
 ```text
 config/project.yaml
-src/facebook_posts_analysis/
+src/social_posts_analysis/
   analysis/
   collectors/
   reporting/
@@ -44,8 +46,9 @@ tests/
 
 - Python 3.12+
 - recommended: `uv`
-- Playwright plus Chromium if using the web collector
-- a valid Meta token if using the API collector
+- Playwright plus Chromium if using Facebook web collection
+- a valid Meta token if using the Facebook API collector
+- Telegram API credentials and an authorized session file if using Telegram MTProto
 
 ## Installation
 
@@ -81,31 +84,56 @@ python -m playwright install chromium
 
 ## Configuration
 
-The checked-in `config/project.yaml` is a safe public template. It should be treated as an example, not as a real working target-specific config.
+The checked-in `config/project.yaml` is a safe public template. Treat it as an example, not as a real working target-specific config.
 
-For actual runs, create a private local file such as `config/project.local.yaml` and pass it explicitly with `--config`. That local file should contain the real page or profile target, date range, local browser profile paths, API tokens, and provider settings.
+For actual runs, create a private local file such as `config/project.local.yaml` and pass it explicitly with `--config`. That local file should contain the real source target, date range, browser profile paths, API tokens, MTProto session path, and provider settings.
 
-Important settings:
+Important top-level settings:
 
-- `page.url` or `page.page_id`
+- `source.platform`: `facebook` or `telegram`
+- `source.url`, `source.source_id`, or `source.source_name`
+- `source.telegram.discussion_chat_id`
 - `date_range.start` and `date_range.end`
-- `collector.mode`: `api`, `web`, or `hybrid`
+- `collector.mode`: `api`, `web`, `hybrid`, or `mtproto`
 - `collector.multi_pass_runs`
 - `collector.wait_between_passes_seconds`
-- `collector.public_web.authenticated_browser.*`
 - `normalization.merge_recent_runs`
+- `normalization.source_run_ids`
 - `sides`: stance targets
 - `providers.embeddings` and `providers.llm`
 
 Environment variables supported by default:
 
 - `META_ACCESS_TOKEN`
-- `FACEBOOK_BROWSER_USER_DATA_DIR`
-- `FACEBOOK_BROWSER_PROFILE_DIRECTORY`
+- `SOCIAL_BROWSER_USER_DATA_DIR`
+- `SOCIAL_BROWSER_PROFILE_DIRECTORY`
+- `TELEGRAM_SESSION_FILE`
+- `TELEGRAM_API_ID`
+- `TELEGRAM_API_HASH`
 - `EMBEDDING_BASE_URL`
 - `EMBEDDING_API_KEY`
 - `LLM_BASE_URL`
 - `LLM_API_KEY`
+
+## Migration Note
+
+This repository used to be Facebook-only. Existing configs must be migrated from:
+
+- `page.url`, `page.page_id`, `page.page_name`
+
+to:
+
+- `source.platform: facebook`
+- `source.url`, `source.source_id`, `source.source_name`
+
+The package and CLI were also renamed:
+
+- old package: `facebook_posts_analysis`
+- new package: `social_posts_analysis`
+- old CLI: `facebook-posts-analysis`
+- new CLI: `social-posts-analysis`
+
+No backward-compatible alias is kept for the old package or CLI names.
 
 ## Quickstart
 
@@ -124,15 +152,21 @@ Copy-Item config/project.yaml config/project.local.yaml
 2. Edit `config/project.local.yaml`.
 3. Run one of the modes below with `--config config/project.local.yaml`.
 
-### Public Web Collection
+### Facebook Public Web Collection
 
 Use this when you want public-only scraping without a logged-in browser.
 
 Minimal settings:
 
 ```yaml
+source:
+  platform: "facebook"
+  url: "https://www.facebook.com/example-public-page/"
+
 collector:
   mode: "web"
+  meta_api:
+    enabled: false
   public_web:
     enabled: true
     authenticated_browser:
@@ -142,22 +176,26 @@ collector:
 Run:
 
 ```bash
-facebook-posts-analysis run-many --config config/project.local.yaml --passes 3
+social-posts-analysis run-many --config config/project.local.yaml --passes 3
 ```
 
 Expected result:
 
-- posts and visible comments collected from public Facebook pages
+- posts and visible comments collected from public Facebook sources
 - best-effort coverage only
 - repeated passes can improve coverage
 
-### Authenticated Browser Collection
+### Facebook Authenticated Browser Collection
 
-Use this when public DOM is too shallow and your local browser session can see more content.
+Use this when the public DOM is too shallow and your local browser session can see more content.
 
 Minimal settings:
 
 ```yaml
+source:
+  platform: "facebook"
+  url: "https://www.facebook.com/example-public-page/"
+
 collector:
   mode: "web"
   public_web:
@@ -172,21 +210,21 @@ collector:
 Optional environment variables:
 
 ```bash
-export FACEBOOK_BROWSER_USER_DATA_DIR="/path/to/browser/User Data"
-export FACEBOOK_BROWSER_PROFILE_DIRECTORY="Default"
+export SOCIAL_BROWSER_USER_DATA_DIR="/path/to/browser/User Data"
+export SOCIAL_BROWSER_PROFILE_DIRECTORY="Default"
 ```
 
 Windows PowerShell:
 
 ```powershell
-$env:FACEBOOK_BROWSER_USER_DATA_DIR="C:\Users\<user>\AppData\Local\Google\Chrome\User Data"
-$env:FACEBOOK_BROWSER_PROFILE_DIRECTORY="Default"
+$env:SOCIAL_BROWSER_USER_DATA_DIR="C:\Users\<user>\AppData\Local\Google\Chrome\User Data"
+$env:SOCIAL_BROWSER_PROFILE_DIRECTORY="Default"
 ```
 
 Run:
 
 ```bash
-facebook-posts-analysis run-many --config config/project.local.yaml --passes 3
+social-posts-analysis run-many --config config/project.local.yaml --passes 3
 ```
 
 Expected result:
@@ -195,13 +233,17 @@ Expected result:
 - still limited to what the logged-in account can see
 - no credentials stored in the project
 
-### Meta API Collection
+### Facebook Meta API Collection
 
-Use this when the target object and your Meta permissions allow API access.
+Use this when the target object and Meta permissions allow API access.
 
 Minimal settings:
 
 ```yaml
+source:
+  platform: "facebook"
+  source_id: "123456789"
+
 collector:
   mode: "api"
   meta_api:
@@ -223,45 +265,99 @@ $env:META_ACCESS_TOKEN="your-token"
 Run:
 
 ```bash
-facebook-posts-analysis run-all --config config/project.local.yaml
+social-posts-analysis run-all --config config/project.local.yaml
 ```
 
 Expected result:
 
 - more stable structure than web scraping
 - still depends on Meta permissions and target object type
-- page or profile access is not guaranteed
+
+### Telegram MTProto Collection
+
+Use this when you want one Telegram channel per run, optionally with its linked discussion chat.
+
+Minimal settings:
+
+```yaml
+source:
+  platform: "telegram"
+  source_name: "example_channel"
+  telegram:
+    discussion_chat_id: null
+
+collector:
+  mode: "mtproto"
+  meta_api:
+    enabled: false
+  public_web:
+    enabled: false
+  telegram_mtproto:
+    enabled: true
+    session_file: ".sessions/example_channel"
+    api_id: 123456
+    api_hash: "your-api-hash"
+```
+
+Environment variables:
+
+```bash
+export TELEGRAM_SESSION_FILE=".sessions/example_channel"
+export TELEGRAM_API_ID="123456"
+export TELEGRAM_API_HASH="your-api-hash"
+```
+
+Windows PowerShell:
+
+```powershell
+$env:TELEGRAM_SESSION_FILE=".sessions/example_channel"
+$env:TELEGRAM_API_ID="123456"
+$env:TELEGRAM_API_HASH="your-api-hash"
+```
+
+Run:
+
+```bash
+social-posts-analysis run-all --config config/project.local.yaml
+```
+
+Expected result:
+
+- channel posts collected in the configured date range
+- linked discussion comments/replies collected when the discussion chat exists and is visible to the session
+- service messages filtered but counted in metadata
+- if there is no linked discussion chat, the run still succeeds with posts only and a warning
 
 ## Usage
 
 Full pipeline:
 
 ```bash
-facebook-posts-analysis run-all --config config/project.local.yaml
+social-posts-analysis run-all --config config/project.local.yaml
 ```
 
 Multi-pass full pipeline:
 
 ```bash
-facebook-posts-analysis run-many --config config/project.local.yaml --passes 3
+social-posts-analysis run-many --config config/project.local.yaml --passes 3
 ```
 
 Step by step:
 
 ```bash
-facebook-posts-analysis collect --config config/project.local.yaml
-facebook-posts-analysis normalize --config config/project.local.yaml --run-id <run_id>
-facebook-posts-analysis analyze --config config/project.local.yaml --run-id <run_id>
-facebook-posts-analysis review-export --config config/project.local.yaml --run-id <run_id>
-facebook-posts-analysis report --config config/project.local.yaml --run-id <run_id>
-facebook-posts-analysis export-tables --config config/project.local.yaml --run-id <run_id>
+social-posts-analysis collect --config config/project.local.yaml
+social-posts-analysis normalize --config config/project.local.yaml --run-id <run_id>
+social-posts-analysis analyze --config config/project.local.yaml --run-id <run_id>
+social-posts-analysis review-export --config config/project.local.yaml --run-id <run_id>
+social-posts-analysis report --config config/project.local.yaml --run-id <run_id>
+social-posts-analysis export-tables --config config/project.local.yaml --run-id <run_id>
 ```
 
 If you use another config path, replace `config/project.local.yaml` in the commands above.
 
 ## CLI Commands
 
-The package exposes the `facebook-posts-analysis` CLI with:
+The package exposes the `social-posts-analysis` CLI with:
 
 - `collect`
 - `normalize`
@@ -272,7 +368,7 @@ The package exposes the `facebook-posts-analysis` CLI with:
 - `run-all`
 - `run-many`
 
-`run-many` is useful for unstable public-web collection, because Facebook can reveal slightly different content across repeated passes.
+`run-many` is most useful for unstable Facebook web collection, because the public DOM can reveal slightly different content across repeated passes.
 
 ## Output Tables
 
@@ -306,18 +402,6 @@ Reports:
 - `reports/report_<run_id>.xlsx`
 - `reports/report_<run_id>_tables/*.csv`
 
-## Authenticated Browser Mode
-
-For web collection, the safest supported approach is reusing an already logged-in local browser profile rather than storing credentials in the project.
-
-Current config supports:
-
-- Chrome
-- Edge
-- custom user-data directory
-
-The collector can launch a copied snapshot of the browser profile, which reduces the chance of interfering with a live browser session.
-
 ## Private Local Files
 
 These files or directories should stay local and should not be committed:
@@ -327,7 +411,7 @@ These files or directories should stay local and should not be committed:
 - `reports/`
 - `review/`
 - local browser profile paths
-- API tokens and provider keys
+- Meta tokens, Telegram credentials, and provider keys
 - virtual environments and cache directories
 
 ## Testing
@@ -337,15 +421,14 @@ Run:
 ```bash
 uv run ruff check .
 uv run mypy src
-uv run pytest
+uv run pytest -q
 ```
 
-The test suite currently covers:
+The current test suite covers:
 
-- Meta API pagination and nested comments
-- public-web parsing and timestamp handling
-- reply and control-line cleanup
-- comment hierarchy construction from visible nesting
+- Facebook Meta API pagination and nested comments
+- Facebook public-web parsing and timestamp handling
+- Telegram MTProto source resolution, discussion collection, service-message filtering, and reaction parsing
 - normalization and merged snapshots
 - analysis helpers and support metrics
 - review override application
@@ -361,11 +444,13 @@ GitHub Actions runs:
 
 ## Important Limits
 
-- The public-web collector is best-effort. Facebook can expose different DOM states across runs.
-- Authenticated browser mode still only sees what the logged-in account can see.
+- Facebook public-web collection is best-effort. The DOM can expose different content across runs.
+- Facebook authenticated browser mode still only sees what the logged-in account can see.
+- Telegram v1 supports one channel per run, plus its linked discussion chat when it exists.
+- Telegram Bot API and Telegram web scraping are intentionally out of scope for v1.
 - Some posts may still show a visible comment counter while not yielding full text comments in the DOM.
-- API-first collection depends on the current Meta permission model and the target object type.
-- Heuristic fallback providers keep the pipeline usable offline, but proper embeddings and LLM providers will produce better analytical quality.
+- API-first Facebook collection depends on the current Meta permission model and the target object type.
+- Heuristic fallback providers keep the pipeline usable offline, but proper embeddings and LLM providers produce better analytical quality.
 
 ## License
 

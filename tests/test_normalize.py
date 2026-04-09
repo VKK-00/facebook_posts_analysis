@@ -4,7 +4,7 @@ import json
 import shutil
 from pathlib import Path
 
-from facebook_posts_analysis.normalize import NormalizationService
+from social_posts_analysis.normalize import NormalizationService
 
 
 def test_normalization_materializes_nested_comments(project_config, project_paths) -> None:
@@ -18,11 +18,15 @@ def test_normalization_materializes_nested_comments(project_config, project_path
     comments = pl.read_parquet(project_paths.processed_root / "comments.parquet")
     edges = pl.read_parquet(project_paths.processed_root / "comment_edges.parquet")
     posts = pl.read_parquet(project_paths.processed_root / "posts.parquet")
+    collection_runs = pl.read_parquet(project_paths.processed_root / "collection_runs.parquet")
 
     assert posts.height == 2
     assert comments.height == 2
+    assert "platform" in posts.columns
+    assert "thread_root_post_id" in comments.columns
     assert edges.filter(pl.col("parent_comment_id").is_not_null()).height == 1
     assert comments.sort("depth")["depth"].to_list() == [0, 1]
+    assert collection_runs["source_id"][0] == "page_1"
 
 
 def test_normalization_merges_recent_runs_into_snapshot(project_root: Path, project_config, project_paths) -> None:
@@ -36,20 +40,24 @@ def test_normalization_merges_recent_runs_into_snapshot(project_root: Path, proj
     manifest["posts"][0]["comments"].append(
         {
             "comment_id": "comment_2",
+            "platform": "facebook",
             "parent_post_id": "page_1_post_1",
             "parent_comment_id": None,
+            "reply_to_message_id": None,
+            "thread_root_post_id": "page_1_post_1",
             "created_at": "2026-03-30T10:00:00+00:00",
             "message": "A newly discovered supporting comment.",
             "permalink": "https://facebook.com/example/posts/1?comment_id=3",
             "reactions": 1,
+            "reaction_breakdown_json": None,
             "source_collector": "meta_api",
             "depth": 0,
             "raw_path": "data/raw/20260402T121500Z/api_comment_items/comment_2.json",
             "author": {
                 "author_id": "user_3",
                 "name": "Late User",
-                "profile_url": None,
-            },
+                "profile_url": None
+            }
         }
     )
     manifest["posts"][0]["comments_count"] = 3

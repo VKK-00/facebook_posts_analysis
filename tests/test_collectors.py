@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
-from facebook_posts_analysis.collectors.meta_api import MetaApiCollector
-from facebook_posts_analysis.collectors.public_web import PublicWebCollector
-from facebook_posts_analysis.contracts import PostSnapshot
-from facebook_posts_analysis.raw_store import RawSnapshotStore
+from social_posts_analysis.collectors.meta_api import MetaApiCollector
+from social_posts_analysis.collectors.public_web import PublicWebCollector
+from social_posts_analysis.collectors.telegram_mtproto import DiscussionContext, TelegramMtprotoCollector
+from social_posts_analysis.config import ProjectConfig
+from social_posts_analysis.contracts import PostSnapshot
+from social_posts_analysis.raw_store import RawSnapshotStore
 
 
 def test_meta_api_collector_paginates_and_recurses_comments(project_config, tmp_path: Path, monkeypatch) -> None:
+    project_config.collector.meta_api.enabled = True
     project_config.collector.meta_api.access_token = "token"
-    project_config.page.url = "https://www.facebook.com/example-page"
+    project_config.source.url = "https://www.facebook.com/example-page"
     collector = MetaApiCollector(project_config)
 
     def fake_get_json(self, endpoint, params=None, full_url=None):  # noqa: ANN001, ANN202
@@ -76,9 +83,9 @@ def test_meta_api_collector_paginates_and_recurses_comments(project_config, tmp_
     monkeypatch.setattr(collector, "_get_json", fake_get_json.__get__(collector, MetaApiCollector))
     manifest = collector.collect("run-1", RawSnapshotStore(tmp_path / "raw"))
 
-    assert manifest.page.page_id == "page_1"
+    assert manifest.source.source_id == "page_1"
     assert len(manifest.posts) == 1
-    assert manifest.posts[0].page_id == "page_1"
+    assert manifest.posts[0].source_id == "page_1"
     assert [comment.depth for comment in manifest.posts[0].comments] == [0, 1]
 
 
@@ -98,18 +105,19 @@ def test_public_web_time_parser_handles_relative_and_calendar_values() -> None:
 
 def test_public_web_date_only_end_boundary_is_inclusive(project_config) -> None:
     collector = PublicWebCollector(project_config)
+    project_config.date_range.end = "2026-04-02"
     assert collector._within_configured_range("2026-04-02T10:00:00+00:00") is True
 
 
 def test_public_web_permalink_normalization_removes_tracking_query() -> None:
     raw = (
-        "https://www.facebook.com/VolodymyrBugrov/posts/pfbid02BnkaQDGdXiiNCL3twBRPuQMMYMomqLe2hQM7vjUNjVWXAcqS2tM6H6VKeuiBhvq4l"
+        "https://www.facebook.com/example-page/posts/pfbid02BnkaQDGdXiiNCL3twBRPuQMMYMomqLe2hQM7vjUNjVWXAcqS2tM6H6VKeuiBhvq4l"
         "?__cft__[0]=token&__tn__=%2CO%2CP-R&locale=en_US"
     )
     normalized = PublicWebCollector._normalize_permalink(raw)
 
     assert normalized == (
-        "https://www.facebook.com/VolodymyrBugrov/posts/pfbid02BnkaQDGdXiiNCL3twBRPuQMMYMomqLe2hQM7vjUNjVWXAcqS2tM6H6VKeuiBhvq4l"
+        "https://www.facebook.com/example-page/posts/pfbid02BnkaQDGdXiiNCL3twBRPuQMMYMomqLe2hQM7vjUNjVWXAcqS2tM6H6VKeuiBhvq4l"
     )
 
 
@@ -165,7 +173,7 @@ def test_public_web_extracts_embedded_publish_time_from_html() -> None:
     published_at = PublicWebCollector._extract_embedded_published_at(
         html,
         detail_url="https://www.facebook.com/reel/1178401624169743?locale=en_US",
-        post_permalink="https://www.facebook.com/VolodymyrBugrov/videos/1178401624169743/?locale=en_US",
+        post_permalink="https://www.facebook.com/example/videos/1178401624169743/?locale=en_US",
     )
 
     assert published_at == "2026-02-26T15:11:00+00:00"
@@ -229,6 +237,8 @@ def test_public_web_builds_comment_hierarchy_from_nesting_offset(project_config)
     assert [comment.depth for comment in comments] == [0, 1, 0]
     assert comments[1].parent_comment_id == comments[0].comment_id
     assert comments[2].parent_comment_id is None
+    assert comments[0].platform == "facebook"
+    assert comments[0].thread_root_post_id == "post_1"
 
 
 def test_public_web_mobile_timeline_parser_extracts_posts() -> None:
@@ -263,7 +273,8 @@ def test_public_web_mobile_timeline_parser_extracts_posts() -> None:
 def test_public_web_posts_match_for_mobile_and_desktop_variants() -> None:
     desktop = PostSnapshot(
         post_id="desktop-1",
-        page_id="page-1",
+        platform="facebook",
+        source_id="page-1",
         created_at="2026-04-02T10:00:00+00:00",
         message="First public update from the page feed.",
         permalink="https://facebook.com/post/1",
@@ -271,7 +282,8 @@ def test_public_web_posts_match_for_mobile_and_desktop_variants() -> None:
     )
     mobile = PostSnapshot(
         post_id="mobile-1",
-        page_id="page-1",
+        platform="facebook",
+        source_id="page-1",
         created_at="2026-04-02T10:30:00+00:00",
         message="First public update from the page feed. See more",
         permalink=None,
@@ -279,3 +291,198 @@ def test_public_web_posts_match_for_mobile_and_desktop_variants() -> None:
     )
 
     assert PublicWebCollector._posts_match(desktop, mobile) is True
+
+
+@dataclass
+class FakeReplies:
+    replies: int
+
+
+@dataclass
+class FakeReaction:
+    emoticon: str
+
+
+@dataclass
+class FakeReactionResult:
+    reaction: FakeReaction
+    count: int
+
+
+@dataclass
+class FakeReactions:
+    results: list[FakeReactionResult]
+
+
+@dataclass
+class FakeReplyTo:
+    reply_to_msg_id: int | None = None
+    reply_to_top_id: int | None = None
+
+
+@dataclass
+class FakeChat:
+    id: int
+    title: str
+    username: str | None = None
+
+
+@dataclass
+class FakeSender:
+    id: int
+    first_name: str
+    username: str | None = None
+
+
+@dataclass
+class FakeMessage:
+    id: int
+    date: datetime
+    message: str | None = None
+    sender: FakeSender | None = None
+    replies: FakeReplies | None = None
+    views: int | None = None
+    forwards: int | None = None
+    reactions: FakeReactions | None = None
+    media: Any = None
+    reply_to: FakeReplyTo | None = None
+    action: Any = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "date": self.date.isoformat(),
+            "message": self.message,
+        }
+
+
+class MessageMediaPhoto:
+    pass
+
+
+def _telegram_config() -> ProjectConfig:
+    return ProjectConfig.model_validate(
+        {
+            "source": {"platform": "telegram", "source_name": "example_channel"},
+            "sides": [{"side_id": "side_a", "name": "Actor A"}],
+            "collector": {
+                "mode": "mtproto",
+                "meta_api": {"enabled": False},
+                "public_web": {"enabled": False},
+                "telegram_mtproto": {
+                    "enabled": True,
+                    "session_file": ".sessions/example",
+                    "api_id": 12345,
+                    "api_hash": "hash",
+                    "page_size": 50,
+                },
+            },
+        }
+    )
+
+
+def test_telegram_collector_collects_posts_without_discussion(tmp_path: Path, monkeypatch) -> None:
+    config = _telegram_config()
+    collector = TelegramMtprotoCollector(config)
+
+    source_entity = FakeChat(id=1001, title="Example Channel", username="example_channel")
+    post_message = FakeMessage(
+        id=7,
+        date=datetime(2026, 4, 1, 10, 0, tzinfo=UTC),
+        message="Channel post",
+        replies=FakeReplies(replies=0),
+        views=120,
+        forwards=5,
+        reactions=FakeReactions(results=[FakeReactionResult(FakeReaction("👍"), 3)]),
+    )
+    fake_client = SimpleNamespace(disconnect=lambda: None)
+
+    monkeypatch.setattr(collector, "_open_client", lambda: fake_client)
+    monkeypatch.setattr(collector, "_resolve_source_entity", lambda client: source_entity)
+    monkeypatch.setattr(collector, "_resolve_discussion_entity", lambda client, source: None)
+    monkeypatch.setattr(collector, "_iter_source_messages", lambda client, source: [post_message])
+
+    manifest = collector.collect("tg-run-1", RawSnapshotStore(tmp_path / "raw"))
+
+    assert manifest.source.platform == "telegram"
+    assert manifest.source.discussion_linked is False
+    assert len(manifest.posts) == 1
+    assert "no linked discussion chat" in manifest.warnings[0].lower()
+    assert manifest.posts[0].views == 120
+
+
+def test_telegram_collector_builds_nested_discussion_tree(tmp_path: Path, monkeypatch) -> None:
+    config = _telegram_config()
+    collector = TelegramMtprotoCollector(config)
+
+    source_entity = FakeChat(id=1001, title="Example Channel", username="example_channel")
+    discussion_entity = FakeChat(id=2002, title="Example Discussion")
+    post_message = FakeMessage(
+        id=7,
+        date=datetime(2026, 4, 1, 10, 0, tzinfo=UTC),
+        message="Channel post",
+        replies=FakeReplies(replies=2),
+    )
+    parent_comment = FakeMessage(
+        id=71,
+        date=datetime(2026, 4, 1, 10, 5, tzinfo=UTC),
+        message="Top-level reply",
+        sender=FakeSender(id=501, first_name="Alice"),
+        reply_to=FakeReplyTo(reply_to_msg_id=700),
+    )
+    nested_reply = FakeMessage(
+        id=72,
+        date=datetime(2026, 4, 1, 10, 6, tzinfo=UTC),
+        message="Nested reply",
+        sender=FakeSender(id=502, first_name="Bob"),
+        reply_to=FakeReplyTo(reply_to_msg_id=71),
+        reactions=FakeReactions(results=[FakeReactionResult(FakeReaction("🔥"), 2)]),
+    )
+    service_message = FakeMessage(
+        id=73,
+        date=datetime(2026, 4, 1, 10, 7, tzinfo=UTC),
+        action="join",
+    )
+    fake_client = SimpleNamespace(disconnect=lambda: None)
+
+    monkeypatch.setattr(collector, "_open_client", lambda: fake_client)
+    monkeypatch.setattr(collector, "_resolve_source_entity", lambda client: source_entity)
+    monkeypatch.setattr(collector, "_resolve_discussion_entity", lambda client, source: discussion_entity)
+    monkeypatch.setattr(collector, "_iter_source_messages", lambda client, source: [post_message])
+    monkeypatch.setattr(
+        collector,
+        "_fetch_discussion_context",
+        lambda client, source, message: DiscussionContext(chat=discussion_entity, root_message_id=700),
+    )
+    monkeypatch.setattr(
+        collector,
+        "_iter_discussion_messages",
+        lambda client, context: [parent_comment, nested_reply, service_message],
+    )
+
+    manifest = collector.collect("tg-run-2", RawSnapshotStore(tmp_path / "raw"))
+
+    assert manifest.source.discussion_linked is True
+    assert manifest.source.filtered_service_message_count == 1
+    assert len(manifest.posts[0].comments) == 2
+    assert manifest.posts[0].comments[0].depth == 0
+    assert manifest.posts[0].comments[1].depth == 1
+    assert manifest.posts[0].comments[1].parent_comment_id == manifest.posts[0].comments[0].comment_id
+    assert manifest.posts[0].comments[1].reaction_breakdown_json == '{"🔥": 2}'
+
+
+def test_telegram_collector_reaction_breakdown_and_media_type() -> None:
+    config = _telegram_config()
+    collector = TelegramMtprotoCollector(config)
+    message = FakeMessage(
+        id=7,
+        date=datetime(2026, 4, 1, 10, 0, tzinfo=UTC),
+        reactions=FakeReactions(results=[FakeReactionResult(FakeReaction("👍"), 3)]),
+        media=MessageMediaPhoto(),
+    )
+
+    breakdown = collector._reaction_breakdown(message)
+    media_type = collector._media_type(message)
+
+    assert breakdown == {"👍": 3}
+    assert media_type == "photo"

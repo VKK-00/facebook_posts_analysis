@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import polars as pl
 
-from facebook_posts_analysis.analysis.language import LanguageDetector
-from facebook_posts_analysis.analysis.metrics import compute_support_metrics
-from facebook_posts_analysis.analysis.providers import HeuristicLLMProvider, OpenAICompatibleLLMProvider
-from facebook_posts_analysis.config import LLMProviderConfig, SideConfig
+from social_posts_analysis.analysis.language import LanguageDetector
+from social_posts_analysis.analysis.metrics import compute_support_metrics
+from social_posts_analysis.analysis.providers import HeuristicLLMProvider, OpenAICompatibleLLMProvider
+from social_posts_analysis.config import LLMProviderConfig, SideConfig
 
 
 def test_language_detector_fallbacks() -> None:

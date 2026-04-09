@@ -9,10 +9,10 @@ import polars as pl
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from openpyxl import Workbook
 
-from facebook_posts_analysis.analysis.metrics import compute_support_metrics
-from facebook_posts_analysis.config import ProjectConfig
-from facebook_posts_analysis.paths import ProjectPaths
-from facebook_posts_analysis.utils import read_json
+from social_posts_analysis.analysis.metrics import compute_support_metrics
+from social_posts_analysis.config import ProjectConfig
+from social_posts_analysis.paths import ProjectPaths
+from social_posts_analysis.utils import read_json
 
 
 class ReviewExportService:
@@ -210,7 +210,22 @@ class ReportService:
         reply_depth_summary = self._reply_depth_summary(comments)
         warnings = self._data_quality_warnings(run_id, posts, comments, analysis_runs, collection_runs)
 
-        page_name = collection_runs["page_name"][0] if collection_runs.height else self.config.page.page_name or "Facebook Page"
+        platform = collection_runs["platform"][0] if collection_runs.height and "platform" in collection_runs.columns else self.config.source.platform
+        source_name = (
+            collection_runs["source_name"][0]
+            if collection_runs.height and "source_name" in collection_runs.columns
+            else self.config.source.source_name or self.config.source.source_id or "Source"
+        )
+        source_id = (
+            collection_runs["source_id"][0]
+            if collection_runs.height and "source_id" in collection_runs.columns
+            else self.config.source.source_id or ""
+        )
+        source_type = (
+            collection_runs["source_type"][0]
+            if collection_runs.height and "source_type" in collection_runs.columns
+            else ("channel" if platform == "telegram" else "page")
+        )
         source_run_ids: list[str] = []
         if collection_runs.height and "source_run_ids" in collection_runs.columns:
             raw_source_run_ids = collection_runs["source_run_ids"][0]
@@ -230,10 +245,14 @@ class ReportService:
             "top_critical_comments": self._rows_to_frame(top_critical_comments),
             "coverage_gaps": self._rows_to_frame(coverage_gaps),
         }
+        telegram_summary = self._telegram_summary(posts, comments, collection_runs) if platform == "telegram" else None
         return {
-            "title": f"Narrative analysis report: {page_name}",
+            "title": f"Narrative analysis report: {source_name}",
             "run_id": run_id,
-            "page_name": page_name,
+            "platform": platform,
+            "source_name": source_name,
+            "source_id": source_id,
+            "source_type": source_type,
             "post_count": posts.height,
             "comment_count": comments.height,
             "source_run_ids": source_run_ids or [run_id],
@@ -250,6 +269,7 @@ class ReportService:
             "top_critical_comments": top_critical_comments,
             "reply_depth_summary": reply_depth_summary,
             "warnings": warnings,
+            "telegram_summary": telegram_summary,
             "export_tables": export_tables,
         }
 
@@ -430,6 +450,11 @@ class ReportService:
                 "reactions",
                 "shares",
                 "comments_count",
+                "views",
+                "forwards",
+                "reply_count",
+                "has_media",
+                "media_type",
                 pl.col("message").fill_null("").str.slice(0, 220).alias("post_excerpt"),
             )
             .join(extracted_counts, left_on="post_id", right_on="parent_post_id", how="left")
@@ -439,6 +464,31 @@ class ReportService:
             )
             .sort("created_at", descending=True)
         )
+
+    def _telegram_summary(
+        self,
+        posts: pl.DataFrame,
+        comments: pl.DataFrame,
+        collection_runs: pl.DataFrame,
+    ) -> dict[str, Any]:
+        discussion_linked = (
+            bool(collection_runs["discussion_linked"][0])
+            if collection_runs.height and "discussion_linked" in collection_runs.columns
+            else False
+        )
+        filtered_service_message_count = (
+            int(collection_runs["filtered_service_message_count"][0])
+            if collection_runs.height and "filtered_service_message_count" in collection_runs.columns
+            else 0
+        )
+        return {
+            "discussion_linked": discussion_linked,
+            "filtered_service_message_count": filtered_service_message_count,
+            "total_views": int(posts["views"].fill_null(0).sum()) if "views" in posts.columns and posts.height else 0,
+            "total_forwards": int(posts["forwards"].fill_null(0).sum()) if "forwards" in posts.columns and posts.height else 0,
+            "total_reply_count": int(posts["reply_count"].fill_null(0).sum()) if "reply_count" in posts.columns and posts.height else 0,
+            "reaction_breakdown": self._reaction_breakdown_summary(posts, comments),
+        }
 
     def _top_comments_by_stance(
         self,
@@ -502,6 +552,14 @@ class ReportService:
             warnings.append(
                 f"Normalized snapshot merged {int(collection_runs['source_run_count'][0])} recent collection runs."
             )
+        if (
+            collection_runs.height
+            and "platform" in collection_runs.columns
+            and collection_runs["platform"][0] == "telegram"
+            and "discussion_linked" in collection_runs.columns
+            and not bool(collection_runs["discussion_linked"][0])
+        ):
+            warnings.append("Telegram source has no linked discussion chat; stance/support metrics are based on posts only where comments are absent.")
         if comments.filter(pl.col("message").fill_null("").str.len_chars() == 0).height > 0:
             warnings.append("Some comments were collected without message text.")
         if posts.filter(pl.col("message").fill_null("").str.len_chars() == 0).height > 0:
@@ -511,6 +569,27 @@ class ReportService:
             if llm_provider == "heuristic_llm":
                 warnings.append("Stance and cluster descriptions were generated with heuristic fallbacks.")
         return list(dict.fromkeys(warnings))
+
+    def _reaction_breakdown_summary(self, posts: pl.DataFrame, comments: pl.DataFrame) -> list[dict[str, Any]]:
+        totals: dict[str, int] = {}
+        for frame in (posts, comments):
+            if frame.is_empty() or "reaction_breakdown_json" not in frame.columns:
+                continue
+            for raw_value in frame["reaction_breakdown_json"].fill_null("").to_list():
+                if not raw_value:
+                    continue
+                try:
+                    payload = json.loads(raw_value)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                for key, value in payload.items():
+                    totals[str(key)] = totals.get(str(key), 0) + int(value or 0)
+        return [
+            {"reaction": reaction, "count": count}
+            for reaction, count in sorted(totals.items(), key=lambda item: item[1], reverse=True)
+        ]
 
     def _load_table(self, table_name: str) -> pl.DataFrame:
         path = self.paths.processed_root / f"{table_name}.parquet"

@@ -1,4 +1,4 @@
-"""facebook_posts_analysis package."""
+"""social_posts_analysis package."""
 
 __all__ = ["__version__"]
 

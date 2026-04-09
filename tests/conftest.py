@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from facebook_posts_analysis.config import load_config
-from facebook_posts_analysis.paths import ProjectPaths
+from social_posts_analysis.config import load_config
+from social_posts_analysis.paths import ProjectPaths
 
 
 @pytest.fixture()

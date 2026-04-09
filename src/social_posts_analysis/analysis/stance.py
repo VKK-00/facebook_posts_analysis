@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from facebook_posts_analysis.config import SideConfig
+from social_posts_analysis.config import SideConfig
 
 from .providers import LLMProvider
 

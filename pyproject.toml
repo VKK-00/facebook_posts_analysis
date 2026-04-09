@@ -3,9 +3,9 @@ requires = ["hatchling>=1.25"]
 build-backend = "hatchling.build"
 
 [project]
-name = "facebook-posts-analysis"
+name = "social-posts-analysis"
 version = "0.1.0"
-description = "Local-first Python pipeline for collecting Facebook posts and comments, then analyzing narratives, stance, and support."
+description = "Local-first Python pipeline for collecting social posts and comments, then analyzing narratives, stance, and support."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
@@ -31,6 +31,7 @@ dependencies = [
   "pydantic-settings>=2.6.1,<3.0.0",
   "pydantic>=2.9.2,<3.0.0",
   "pyyaml>=6.0.2,<7.0.0",
+  "telethon>=1.40.0,<2.0.0",
   "tenacity>=9.0.0,<10.0.0",
   "typer>=0.12.5,<1.0.0"
 ]
@@ -45,10 +46,10 @@ dev = [
 ]
 
 [project.scripts]
-facebook-posts-analysis = "facebook_posts_analysis.cli:app"
+social-posts-analysis = "social_posts_analysis.cli:app"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/facebook_posts_analysis"]
+packages = ["src/social_posts_analysis"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

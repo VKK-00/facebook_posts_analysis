@@ -3,9 +3,9 @@ from __future__ import annotations
 import polars as pl
 from openpyxl import load_workbook
 
-from facebook_posts_analysis.analysis.service import AnalysisService
-from facebook_posts_analysis.normalize import NormalizationService
-from facebook_posts_analysis.reporting.service import ReportService, ReviewExportService
+from social_posts_analysis.analysis.service import AnalysisService
+from social_posts_analysis.normalize import NormalizationService
+from social_posts_analysis.reporting.service import ReportService, ReviewExportService
 
 
 def test_report_service_applies_manual_overrides(project_config, project_paths) -> None:

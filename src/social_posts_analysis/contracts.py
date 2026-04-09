@@ -4,6 +4,9 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+PlatformName = Literal["facebook", "telegram"]
+CollectorMode = Literal["api", "web", "hybrid", "mtproto"]
+
 
 class AuthorSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -28,12 +31,16 @@ class CommentSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     comment_id: str
+    platform: PlatformName
     parent_post_id: str
     parent_comment_id: str | None = None
+    reply_to_message_id: str | None = None
+    thread_root_post_id: str | None = None
     created_at: str | None = None
     message: str | None = None
     permalink: str | None = None
     reactions: int = 0
+    reaction_breakdown_json: str | None = None
     source_collector: str
     depth: int = 0
     raw_path: str | None = None
@@ -44,13 +51,20 @@ class PostSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     post_id: str
-    page_id: str
+    platform: PlatformName
+    source_id: str
     created_at: str | None = None
     message: str | None = None
     permalink: str | None = None
     reactions: int = 0
     shares: int = 0
     comments_count: int = 0
+    views: int | None = None
+    forwards: int | None = None
+    reply_count: int | None = None
+    has_media: bool = False
+    media_type: str | None = None
+    reaction_breakdown_json: str | None = None
     source_collector: str
     raw_path: str | None = None
     author: AuthorSnapshot | None = None
@@ -58,15 +72,21 @@ class PostSnapshot(BaseModel):
     comments: list[CommentSnapshot] = Field(default_factory=list)
 
 
-class PageSnapshot(BaseModel):
+class SourceSnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    page_id: str
-    page_name: str | None = None
-    page_url: str | None = None
+    platform: PlatformName
+    source_id: str
+    source_name: str | None = None
+    source_url: str | None = None
+    source_type: str | None = None
     about: str | None = None
     followers_count: int | None = None
     fan_count: int | None = None
+    discussion_chat_id: str | None = None
+    discussion_chat_name: str | None = None
+    discussion_linked: bool | None = None
+    filtered_service_message_count: int = 0
     source_collector: str
     raw_path: str | None = None
 
@@ -77,12 +97,12 @@ class CollectionManifest(BaseModel):
     run_id: str
     collected_at: str
     collector: str
-    mode: Literal["api", "web", "hybrid"]
+    mode: CollectorMode
     status: Literal["success", "partial", "failed"] = "success"
     fallback_used: bool = False
     warnings: list[str] = Field(default_factory=list)
     cursors: dict[str, str] = Field(default_factory=dict)
-    page: PageSnapshot
+    source: SourceSnapshot
     posts: list[PostSnapshot] = Field(default_factory=list)
 
 
@@ -108,4 +128,3 @@ class StanceLabel(BaseModel):
     confidence: float
     model_name: str
     run_id: str
-
