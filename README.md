@@ -1,47 +1,33 @@
 # Facebook Posts Analysis
 
-Local-first Python pipeline for collecting Facebook posts and comments, then analyzing:
+Local-first Python pipeline for collecting Facebook posts and comments, then analyzing narratives, stance, support, and conflict patterns.
 
-- narrative clusters
-- stance toward selected sides or actors
-- support and oppose ratios
-- high-conflict threads
-- language mix for `ru`, `uk`, and `en`
+The project supports two collection paths:
 
-It supports both Meta API collection and a Playwright-based web collector, with reviewable outputs in DuckDB, parquet, CSV, Markdown, and HTML.
+- Meta API, when the target object and permissions allow it
+- Playwright-based web collection, including reuse of a locally logged-in browser profile
+
+Outputs are stored locally and can be reviewed in DuckDB, parquet, CSV, Markdown, and HTML.
 
 ## What The Project Does
 
 - collects posts, comments, and visible replies from Facebook
 - stores raw snapshots per run under `data/raw/<run_id>/`
-- normalizes everything into parquet and DuckDB
-- detects language and clusters posts/comments into narrative groups
-- labels stance toward configured sides
-- computes support metrics globally and by cluster
+- normalizes collected data into parquet files and DuckDB tables
+- detects language for `ru`, `uk`, and `en`
+- groups posts and comments into narrative clusters
+- labels stance toward configured sides or actors
+- computes support metrics globally and across several scopes
 - exports review files for manual corrections
 - renders Markdown and HTML reports
 
-Recent additions in the current codebase:
+Current codebase additions include:
 
 - authenticated browser profile support for the web collector
 - multi-pass collection runs
-- merged normalized snapshots from several recent runs
-- reply depth extraction for visible nested comments
+- merged normalized snapshots from several source runs
+- visible reply-depth extraction
 - coverage-gap reporting for posts where visible counters exceed extracted text comments
-
-## CLI Commands
-
-The package exposes the `facebook-posts-analysis` CLI with:
-
-- `collect`
-- `normalize`
-- `analyze`
-- `review-export`
-- `report`
-- `run-all`
-- `run-many`
-
-`run-many` is useful for unstable public-web collection, because Facebook can reveal slightly different content across repeated passes.
 
 ## Project Layout
 
@@ -95,7 +81,9 @@ python -m playwright install chromium
 
 ## Configuration
 
-Default config lives in `config/project.yaml`.
+The checked-in `config/project.yaml` is a safe public template. It should be treated as an example, not as a real working target-specific config.
+
+For actual runs, create a private local file such as `config/project.local.yaml` and pass it explicitly with `--config`. That local file should contain the real page or profile target, date range, local browser profile paths, API tokens, and provider settings.
 
 Important settings:
 
@@ -119,31 +107,45 @@ Environment variables supported by default:
 - `LLM_BASE_URL`
 - `LLM_API_KEY`
 
-The current checked-in sample config is tuned for the `VolodymyrBugrov` target and web collection. Adjust it before using this repo for another page or profile.
-
 ## Usage
 
 Full pipeline:
 
 ```bash
-facebook-posts-analysis run-all --config config/project.yaml
+facebook-posts-analysis run-all --config config/project.local.yaml
 ```
 
 Multi-pass full pipeline:
 
 ```bash
-facebook-posts-analysis run-many --config config/project.yaml --passes 3
+facebook-posts-analysis run-many --config config/project.local.yaml --passes 3
 ```
 
 Step by step:
 
 ```bash
-facebook-posts-analysis collect --config config/project.yaml
-facebook-posts-analysis normalize --config config/project.yaml --run-id <run_id>
-facebook-posts-analysis analyze --config config/project.yaml --run-id <run_id>
-facebook-posts-analysis review-export --config config/project.yaml --run-id <run_id>
-facebook-posts-analysis report --config config/project.yaml --run-id <run_id>
+facebook-posts-analysis collect --config config/project.local.yaml
+facebook-posts-analysis normalize --config config/project.local.yaml --run-id <run_id>
+facebook-posts-analysis analyze --config config/project.local.yaml --run-id <run_id>
+facebook-posts-analysis review-export --config config/project.local.yaml --run-id <run_id>
+facebook-posts-analysis report --config config/project.local.yaml --run-id <run_id>
 ```
+
+If you use another config path, replace `config/project.local.yaml` in the commands above.
+
+## CLI Commands
+
+The package exposes the `facebook-posts-analysis` CLI with:
+
+- `collect`
+- `normalize`
+- `analyze`
+- `review-export`
+- `report`
+- `run-all`
+- `run-many`
+
+`run-many` is useful for unstable public-web collection, because Facebook can reveal slightly different content across repeated passes.
 
 ## Output Tables
 
@@ -187,6 +189,18 @@ Current config supports:
 
 The collector can launch a copied snapshot of the browser profile, which reduces the chance of interfering with a live browser session.
 
+## Private Local Files
+
+These files or directories should stay local and should not be committed:
+
+- `config/project.local.yaml`
+- `data/`
+- `reports/`
+- `review/`
+- local browser profile paths
+- API tokens and provider keys
+- virtual environments and cache directories
+
 ## Testing
 
 Run:
@@ -199,7 +213,7 @@ The test suite currently covers:
 
 - Meta API pagination and nested comments
 - public-web parsing and timestamp handling
-- reply/control-line cleanup
+- reply and control-line cleanup
 - comment hierarchy construction from visible nesting
 - normalization and merged snapshots
 - analysis helpers and support metrics

@@ -1,6 +1,9 @@
 __pycache__/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .venv/
+.runvenv/
 *.pyc
 *.pyo
 *.pyd
@@ -9,9 +12,8 @@ dist/
 .coverage
 htmlcov/
 
-data/raw/
-data/processed/
+data/
 reports/
 review/
-!review/.gitkeep
 
+config/project.local.yaml
