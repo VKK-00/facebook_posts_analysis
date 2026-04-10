@@ -130,7 +130,13 @@ class ReportService:
 
     def _build_context(self, run_id: str) -> dict[str, Any]:
         posts = self._load_table("posts").filter(pl.col("run_id") == run_id)
+        propagations = self._load_table("propagations").filter(pl.col("run_id") == run_id)
         comments = self._load_table("comments").filter(pl.col("run_id") == run_id)
+        origin_posts = (
+            posts.filter(~pl.col("is_propagation").fill_null(False))
+            if not posts.is_empty() and "is_propagation" in posts.columns
+            else posts
+        )
         languages = self._load_table("detected_languages").filter(pl.col("run_id") == run_id)
         clusters = self._load_table("narrative_clusters").filter(pl.col("run_id") == run_id)
         memberships = self._load_table("cluster_memberships").filter(pl.col("run_id") == run_id)
@@ -141,7 +147,7 @@ class ReportService:
         clusters, memberships = self._apply_narrative_overrides(clusters, memberships)
         stance_labels = self._apply_stance_overrides(stance_labels)
         comment_memberships = memberships.filter(pl.col("item_type") == "comment")
-        support_metrics = compute_support_metrics(stance_labels, comment_memberships, run_id)
+        support_metrics = compute_support_metrics(stance_labels, comment_memberships, comments, run_id)
 
         if memberships.is_empty():
             cluster_counts = pl.DataFrame(schema={"item_type": pl.String, "cluster_id": pl.String, "member_count": pl.Int64})
@@ -174,6 +180,11 @@ class ReportService:
             if not clusters_with_counts.is_empty()
             else []
         )
+        propagation_cluster_rows = (
+            clusters_with_counts.filter(pl.col("item_type") == "propagation").sort("member_count", descending=True).to_dicts()
+            if not clusters_with_counts.is_empty()
+            else []
+        )
         comment_cluster_rows = (
             clusters_with_counts.filter(pl.col("item_type") == "comment").sort("member_count", descending=True).to_dicts()
             if not clusters_with_counts.is_empty()
@@ -181,7 +192,7 @@ class ReportService:
         )
 
         comments_lookup = {row["comment_id"]: row for row in comments.to_dicts()}
-        posts_lookup = {row["post_id"]: row for row in posts.to_dicts()}
+        posts_lookup = {row["post_id"]: row for row in origin_posts.to_dicts()}
         exemplar_quotes = []
         for cluster in comment_cluster_rows[:8]:
             for exemplar_id in cluster.get("exemplar_ids", [])[:2]:
@@ -195,8 +206,11 @@ class ReportService:
                     )
 
         conflict_rows = self._high_conflict_threads(stance_labels, comments, posts_lookup)
-        coverage_gaps = self._coverage_gaps(posts, comments)
-        post_overview = self._post_overview(posts, comments)
+        coverage_gaps = self._coverage_gaps(origin_posts, comments)
+        propagation_coverage_gaps = self._propagation_coverage_gaps(propagations, comments)
+        post_overview = self._post_overview(origin_posts, comments)
+        propagation_overview = self._propagation_overview(propagations, comments)
+        top_propagated_items = self._top_propagated_items(origin_posts, propagations)
         top_supportive_comments = self._top_comments_by_stance(
             stance_labels=stance_labels,
             comments=comments,
@@ -224,7 +238,7 @@ class ReportService:
         source_type = (
             collection_runs["source_type"][0]
             if collection_runs.height and "source_type" in collection_runs.columns
-            else ("channel" if platform == "telegram" else "account" if platform == "x" else "page")
+            else ("channel" if platform == "telegram" else "account" if platform in {"x", "threads", "instagram"} else "page")
         )
         source_run_ids: list[str] = []
         if collection_runs.height and "source_run_ids" in collection_runs.columns:
@@ -234,19 +248,44 @@ class ReportService:
             else:
                 source_run_ids = list(raw_source_run_ids or [])
         source_run_count = int(collection_runs["source_run_count"][0]) if collection_runs.height and "source_run_count" in collection_runs.columns else 1
+        origin_support = (
+            support_metrics.filter(pl.col("scope_type") == "origin_post").sort("support_count", descending=True).to_dicts()
+            if not support_metrics.is_empty()
+            else []
+        )
+        origin_plus_support = (
+            support_metrics.filter(pl.col("scope_type") == "origin_plus_propagations").sort("support_count", descending=True).to_dicts()
+            if not support_metrics.is_empty()
+            else []
+        )
+        propagation_support = (
+            support_metrics.filter(pl.col("scope_type") == "propagation").sort("support_count", descending=True).to_dicts()
+            if not support_metrics.is_empty()
+            else []
+        )
         export_tables = {
             "per_side_support": self._rows_to_frame(global_support),
+            "per_origin_support": self._rows_to_frame(origin_support),
+            "per_origin_plus_propagations": self._rows_to_frame(origin_plus_support),
+            "per_propagation_support": self._rows_to_frame(propagation_support),
             "per_post_overview": post_overview,
+            "per_propagation_overview": propagation_overview,
             "per_thread_conflict": self._rows_to_frame(conflict_rows),
             "post_narratives": self._sanitize_export_frame(self._rows_to_frame(post_cluster_rows)),
+            "propagation_narratives": self._sanitize_export_frame(self._rows_to_frame(propagation_cluster_rows)),
             "comment_narratives": self._sanitize_export_frame(self._rows_to_frame(comment_cluster_rows)),
             "language_mix": self._rows_to_frame(language_mix),
             "top_supportive_comments": self._rows_to_frame(top_supportive_comments),
             "top_critical_comments": self._rows_to_frame(top_critical_comments),
             "coverage_gaps": self._rows_to_frame(coverage_gaps),
+            "propagation_coverage_gaps": self._rows_to_frame(propagation_coverage_gaps),
+            "top_propagated_items": self._rows_to_frame(top_propagated_items),
         }
-        telegram_summary = self._telegram_summary(posts, comments, collection_runs) if platform == "telegram" else None
-        x_summary = self._x_summary(posts, comments) if platform == "x" else None
+        telegram_summary = self._telegram_summary(origin_posts, comments, collection_runs) if platform == "telegram" else None
+        x_summary = self._x_summary(origin_posts, comments) if platform == "x" else None
+        threads_summary = self._threads_summary(origin_posts, comments) if platform == "threads" else None
+        instagram_summary = self._instagram_summary(origin_posts, comments) if platform == "instagram" else None
+        propagation_summary = self._propagation_summary(propagations, comments)
         return {
             "title": f"Narrative analysis report: {source_name}",
             "run_id": run_id,
@@ -254,24 +293,34 @@ class ReportService:
             "source_name": source_name,
             "source_id": source_id,
             "source_type": source_type,
-            "post_count": posts.height,
+            "post_count": origin_posts.height,
+            "propagation_count": propagations.height,
             "comment_count": comments.height,
             "source_run_ids": source_run_ids or [run_id],
             "source_run_count": source_run_count,
             "providers": analysis_runs.to_dicts()[0] if analysis_runs.height else {},
             "global_support": global_support,
+            "origin_support": origin_support,
+            "origin_plus_support": origin_plus_support,
+            "propagation_support": propagation_support,
             "post_clusters": post_cluster_rows,
+            "propagation_clusters": propagation_cluster_rows,
             "comment_clusters": comment_cluster_rows,
             "language_mix": language_mix,
             "exemplar_quotes": exemplar_quotes,
             "high_conflict_threads": conflict_rows,
             "coverage_gaps": coverage_gaps,
+            "propagation_coverage_gaps": propagation_coverage_gaps,
+            "top_propagated_items": top_propagated_items,
             "top_supportive_comments": top_supportive_comments,
             "top_critical_comments": top_critical_comments,
             "reply_depth_summary": reply_depth_summary,
             "warnings": warnings,
             "telegram_summary": telegram_summary,
             "x_summary": x_summary,
+            "threads_summary": threads_summary,
+            "instagram_summary": instagram_summary,
+            "propagation_summary": propagation_summary,
             "export_tables": export_tables,
         }
 
@@ -436,6 +485,30 @@ class ReportService:
             row["post_excerpt"] = (row.get("message") or "")[:220]
         return rows
 
+    def _propagation_coverage_gaps(self, propagations: pl.DataFrame, comments: pl.DataFrame) -> list[dict[str, Any]]:
+        if propagations.is_empty():
+            return []
+        extracted_counts = (
+            comments.filter(pl.col("parent_entity_type") == "propagation")
+            .group_by("parent_entity_id")
+            .agg(pl.len().alias("extracted_comment_count"))
+            if not comments.is_empty()
+            else pl.DataFrame(schema={"parent_entity_id": pl.String, "extracted_comment_count": pl.Int64})
+        )
+        joined = (
+            propagations.select("propagation_id", "message", "comments_count", "permalink", "propagation_kind", "origin_post_id")
+            .join(extracted_counts, left_on="propagation_id", right_on="parent_entity_id", how="left")
+            .with_columns(pl.col("extracted_comment_count").fill_null(0))
+            .with_columns((pl.col("comments_count") - pl.col("extracted_comment_count")).alias("comment_gap"))
+            .filter(pl.col("comment_gap") > 0)
+            .sort("comment_gap", descending=True)
+            .head(8)
+        )
+        rows = joined.to_dicts()
+        for row in rows:
+            row["propagation_excerpt"] = (row.get("message") or "")[:220]
+        return rows
+
     def _post_overview(self, posts: pl.DataFrame, comments: pl.DataFrame) -> pl.DataFrame:
         if posts.is_empty():
             return pl.DataFrame()
@@ -460,6 +533,42 @@ class ReportService:
                 pl.col("message").fill_null("").str.slice(0, 220).alias("post_excerpt"),
             )
             .join(extracted_counts, left_on="post_id", right_on="parent_post_id", how="left")
+            .with_columns(
+                pl.col("extracted_comment_count").fill_null(0),
+                (pl.col("comments_count") - pl.col("extracted_comment_count").fill_null(0)).alias("comment_gap"),
+            )
+            .sort("created_at", descending=True)
+        )
+
+    def _propagation_overview(self, propagations: pl.DataFrame, comments: pl.DataFrame) -> pl.DataFrame:
+        if propagations.is_empty():
+            return pl.DataFrame()
+        extracted_counts = (
+            comments.filter(pl.col("parent_entity_type") == "propagation")
+            .group_by("parent_entity_id")
+            .agg(pl.len().alias("extracted_comment_count"))
+            if not comments.is_empty()
+            else pl.DataFrame(schema={"parent_entity_id": pl.String, "extracted_comment_count": pl.Int64})
+        )
+        return (
+            propagations.select(
+                "propagation_id",
+                "origin_post_id",
+                "origin_external_id",
+                "propagation_kind",
+                "created_at",
+                "permalink",
+                "reactions",
+                "shares",
+                "comments_count",
+                "views",
+                "forwards",
+                "reply_count",
+                "has_media",
+                "media_type",
+                pl.col("message").fill_null("").str.slice(0, 220).alias("propagation_excerpt"),
+            )
+            .join(extracted_counts, left_on="propagation_id", right_on="parent_entity_id", how="left")
             .with_columns(
                 pl.col("extracted_comment_count").fill_null(0),
                 (pl.col("comments_count") - pl.col("extracted_comment_count").fill_null(0)).alias("comment_gap"),
@@ -505,6 +614,84 @@ class ReportService:
             "total_replies": int(posts["reply_count"].fill_null(0).sum()) if "reply_count" in posts.columns and posts.height else 0,
             "reaction_breakdown": self._reaction_breakdown_summary(posts, comments),
         }
+
+    def _threads_summary(
+        self,
+        posts: pl.DataFrame,
+        comments: pl.DataFrame,
+    ) -> dict[str, Any]:
+        return {
+            "total_views": int(posts["views"].fill_null(0).sum()) if "views" in posts.columns and posts.height else 0,
+            "total_likes": int(posts["reactions"].fill_null(0).sum()) if "reactions" in posts.columns and posts.height else 0,
+            "total_reposts": int(posts["shares"].fill_null(0).sum()) if "shares" in posts.columns and posts.height else 0,
+            "total_quotes": int(posts["forwards"].fill_null(0).sum()) if "forwards" in posts.columns and posts.height else 0,
+            "total_replies": int(posts["reply_count"].fill_null(0).sum()) if "reply_count" in posts.columns and posts.height else 0,
+            "reaction_breakdown": self._reaction_breakdown_summary(posts, comments),
+        }
+
+    def _instagram_summary(
+        self,
+        posts: pl.DataFrame,
+        comments: pl.DataFrame,
+    ) -> dict[str, Any]:
+        return {
+            "total_likes": int(posts["reactions"].fill_null(0).sum()) if "reactions" in posts.columns and posts.height else 0,
+            "total_comments_visible": int(posts["comments_count"].fill_null(0).sum())
+            if "comments_count" in posts.columns and posts.height
+            else 0,
+            "total_comments_extracted": comments.height,
+            "reels_count": int(posts.filter(pl.col("media_type").fill_null("").str.to_lowercase() == "reel").height)
+            if "media_type" in posts.columns
+            else 0,
+            "reaction_breakdown": self._reaction_breakdown_summary(posts, comments),
+        }
+
+    def _propagation_summary(self, propagations: pl.DataFrame, comments: pl.DataFrame) -> dict[str, Any] | None:
+        if propagations.is_empty():
+            return None
+        comment_counts = (
+            comments.filter(pl.col("parent_entity_type") == "propagation").group_by("parent_entity_id").agg(pl.len().alias("count"))
+            if not comments.is_empty()
+            else pl.DataFrame(schema={"parent_entity_id": pl.String, "count": pl.Int64})
+        )
+        kind_counts = (
+            propagations.group_by("propagation_kind").agg(pl.len().alias("count")).sort("count", descending=True).to_dicts()
+            if "propagation_kind" in propagations.columns
+            else []
+        )
+        return {
+            "total_instances": propagations.height,
+            "with_comments": int(comment_counts.height),
+            "kinds": kind_counts,
+        }
+
+    def _top_propagated_items(self, posts: pl.DataFrame, propagations: pl.DataFrame) -> list[dict[str, Any]]:
+        if propagations.is_empty():
+            return []
+        counts = (
+            propagations.filter(pl.col("origin_post_id").is_not_null() & (pl.col("origin_post_id") != ""))
+            .group_by("origin_post_id")
+            .agg(
+                pl.len().alias("propagation_count"),
+                pl.col("comments_count").fill_null(0).sum().alias("propagation_comment_count"),
+            )
+            .sort("propagation_count", descending=True)
+            .head(10)
+        )
+        post_lookup = {row["post_id"]: row for row in posts.to_dicts()}
+        rows: list[dict[str, Any]] = []
+        for row in counts.to_dicts():
+            origin_post = post_lookup.get(row["origin_post_id"], {})
+            rows.append(
+                {
+                    "origin_post_id": row["origin_post_id"],
+                    "propagation_count": row["propagation_count"],
+                    "propagation_comment_count": row["propagation_comment_count"],
+                    "origin_excerpt": (origin_post.get("message") or "")[:220],
+                    "origin_permalink": origin_post.get("permalink"),
+                }
+            )
+        return rows
 
     def _top_comments_by_stance(
         self,

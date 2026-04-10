@@ -153,7 +153,7 @@ class XApiCollector(BaseCollector):
         endpoint = f"/users/{user_id}/tweets"
         params: dict[str, Any] = {
             "max_results": min(max(10, self.settings.page_size), 100),
-            "exclude": "retweets,replies",
+            "exclude": "replies",
             "tweet.fields": self.TWEET_FIELDS,
             "user.fields": self.USER_FIELDS,
             "media.fields": self.MEDIA_FIELDS,
@@ -268,10 +268,16 @@ class XApiCollector(BaseCollector):
             name=source_snapshot.source_name,
             profile_url=source_snapshot.source_url,
         )
+        propagation_kind, origin_post_id, origin_external_id = self._propagation_metadata(tweet_payload)
         return PostSnapshot(
             post_id=post_id,
             platform="x",
             source_id=source_snapshot.source_id,
+            origin_post_id=origin_post_id,
+            origin_external_id=origin_external_id,
+            origin_permalink=self._origin_permalink(origin_external_id),
+            propagation_kind=propagation_kind,
+            is_propagation=propagation_kind is not None,
             created_at=tweet_payload.get("created_at"),
             message=tweet_payload.get("text"),
             permalink=self._tweet_permalink(author, tweet_id),
@@ -398,6 +404,29 @@ class XApiCollector(BaseCollector):
         if view_count is not None:
             breakdown["view_count"] = view_count
         return breakdown
+
+    @classmethod
+    def _propagation_metadata(cls, tweet_payload: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+        for item in tweet_payload.get("referenced_tweets") or []:
+            reference_type = str(item.get("type") or "")
+            reference_id = str(item.get("id") or "")
+            if not reference_id:
+                continue
+            if reference_type == "quoted":
+                return "quote", cls._origin_placeholder_post_id(reference_id), reference_id
+            if reference_type == "retweeted":
+                return "repost", cls._origin_placeholder_post_id(reference_id), reference_id
+        return None, None, None
+
+    @staticmethod
+    def _origin_placeholder_post_id(native_tweet_id: str) -> str:
+        return f"x:origin:{native_tweet_id}"
+
+    @staticmethod
+    def _origin_permalink(native_tweet_id: str | None) -> str | None:
+        if not native_tweet_id:
+            return None
+        return f"https://x.com/i/status/{native_tweet_id}"
 
     @staticmethod
     def _extract_views(tweet_payload: dict[str, Any]) -> int | None:

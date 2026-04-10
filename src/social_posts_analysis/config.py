@@ -39,7 +39,7 @@ class TelegramSourceConfig(BaseModel):
 class SourceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    platform: Literal["facebook", "telegram", "x"] = "facebook"
+    platform: Literal["facebook", "telegram", "x", "threads", "instagram"] = "facebook"
     url: str | None = None
     source_id: str | None = None
     source_name: str | None = None
@@ -165,10 +165,66 @@ class XWebConfig(BaseModel):
     authenticated_browser: AuthenticatedBrowserConfig = Field(default_factory=AuthenticatedBrowserConfig)
 
 
+class ThreadsApiConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    base_url: str = "https://graph.threads.net/v1.0"
+    access_token: str | None = Field(default_factory=lambda: _env("THREADS_ACCESS_TOKEN"))
+    page_size: int = 100
+    timeout_seconds: float = 30.0
+    max_retries: int = 3
+
+
+class ThreadsWebConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    headless: bool = True
+    browser_channel: str | None = None
+    max_scrolls: int = 8
+    wait_after_scroll_ms: int = 1500
+    timeout_seconds: float = 30.0
+    authenticated_browser: AuthenticatedBrowserConfig = Field(default_factory=AuthenticatedBrowserConfig)
+
+
+class InstagramGraphApiConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    api_version: str = "v25.0"
+    base_url: str = "https://graph.facebook.com"
+    access_token: str | None = Field(default_factory=lambda: _env("INSTAGRAM_ACCESS_TOKEN"))
+    page_size: int = 100
+    timeout_seconds: float = 30.0
+    max_retries: int = 3
+
+
+class InstagramWebConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    headless: bool = True
+    browser_channel: str | None = None
+    max_scrolls: int = 8
+    wait_after_scroll_ms: int = 1500
+    timeout_seconds: float = 30.0
+    authenticated_browser: AuthenticatedBrowserConfig = Field(default_factory=AuthenticatedBrowserConfig)
+
+
 class CollectorConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    mode: Literal["api", "web", "hybrid", "mtproto", "bot_api", "x_api"] = "hybrid"
+    mode: Literal[
+        "api",
+        "web",
+        "hybrid",
+        "mtproto",
+        "bot_api",
+        "x_api",
+        "threads_api",
+        "instagram_graph_api",
+    ] = "hybrid"
     multi_pass_runs: int = 1
     wait_between_passes_seconds: float = 0.0
     meta_api: FacebookMetaApiConfig = Field(default_factory=FacebookMetaApiConfig)
@@ -178,6 +234,10 @@ class CollectorConfig(BaseModel):
     telegram_bot_api: TelegramBotApiConfig = Field(default_factory=TelegramBotApiConfig)
     x_api: XApiConfig = Field(default_factory=XApiConfig)
     x_web: XWebConfig = Field(default_factory=XWebConfig)
+    threads_api: ThreadsApiConfig = Field(default_factory=ThreadsApiConfig)
+    threads_web: ThreadsWebConfig = Field(default_factory=ThreadsWebConfig)
+    instagram_graph_api: InstagramGraphApiConfig = Field(default_factory=InstagramGraphApiConfig)
+    instagram_web: InstagramWebConfig = Field(default_factory=InstagramWebConfig)
 
 
 class EmbeddingProviderConfig(BaseModel):
@@ -290,6 +350,32 @@ class ProjectConfig(BaseModel):
             else:
                 if not self.collector.x_web.enabled:
                     raise ValueError("X web source requires collector.x_web.enabled=true.")
+        elif self.source.platform == "threads":
+            if self.collector.mode not in {"threads_api", "web"}:
+                raise ValueError("Threads source requires collector.mode='threads_api' or collector.mode='web'.")
+            if self.collector.mode == "threads_api":
+                if not self.collector.threads_api.enabled:
+                    raise ValueError("Threads source requires collector.threads_api.enabled=true.")
+                if not self.collector.threads_api.access_token:
+                    raise ValueError("Threads source requires collector.threads_api.access_token or THREADS_ACCESS_TOKEN.")
+            else:
+                if not self.collector.threads_web.enabled:
+                    raise ValueError("Threads web source requires collector.threads_web.enabled=true.")
+        elif self.source.platform == "instagram":
+            if self.collector.mode not in {"instagram_graph_api", "web"}:
+                raise ValueError("Instagram source requires collector.mode='instagram_graph_api' or collector.mode='web'.")
+            if self.collector.mode == "instagram_graph_api":
+                if not self.collector.instagram_graph_api.enabled:
+                    raise ValueError("Instagram source requires collector.instagram_graph_api.enabled=true.")
+                if not self.collector.instagram_graph_api.access_token:
+                    raise ValueError(
+                        "Instagram source requires collector.instagram_graph_api.access_token or INSTAGRAM_ACCESS_TOKEN."
+                    )
+                if not self.source.source_id:
+                    raise ValueError("Instagram Graph API source requires source.source_id.")
+            else:
+                if not self.collector.instagram_web.enabled:
+                    raise ValueError("Instagram web source requires collector.instagram_web.enabled=true.")
         else:
             if self.collector.mode == "mtproto":
                 raise ValueError("Facebook source cannot use collector.mode='mtproto'.")
@@ -297,6 +383,10 @@ class ProjectConfig(BaseModel):
                 raise ValueError("Facebook source cannot use collector.mode='bot_api'.")
             if self.collector.mode == "x_api":
                 raise ValueError("Facebook source cannot use collector.mode='x_api'.")
+            if self.collector.mode == "threads_api":
+                raise ValueError("Facebook source cannot use collector.mode='threads_api'.")
+            if self.collector.mode == "instagram_graph_api":
+                raise ValueError("Facebook source cannot use collector.mode='instagram_graph_api'.")
             if self.collector.mode == "api" and not self.collector.meta_api.enabled:
                 raise ValueError("collector.meta_api.enabled must be true when collector.mode='api'.")
             if self.collector.mode == "web" and not self.collector.public_web.enabled:

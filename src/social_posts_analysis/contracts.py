@@ -4,8 +4,18 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-PlatformName = Literal["facebook", "telegram", "x"]
-CollectorMode = Literal["api", "web", "hybrid", "mtproto", "bot_api", "x_api"]
+PlatformName = Literal["facebook", "telegram", "x", "threads", "instagram"]
+CollectorMode = Literal[
+    "api",
+    "web",
+    "hybrid",
+    "mtproto",
+    "bot_api",
+    "x_api",
+    "threads_api",
+    "instagram_graph_api",
+]
+ParentEntityType = Literal["post", "propagation"]
 
 
 class AuthorSnapshot(BaseModel):
@@ -33,9 +43,12 @@ class CommentSnapshot(BaseModel):
     comment_id: str
     platform: PlatformName
     parent_post_id: str
+    parent_entity_type: ParentEntityType | None = None
+    parent_entity_id: str | None = None
     parent_comment_id: str | None = None
     reply_to_message_id: str | None = None
     thread_root_post_id: str | None = None
+    origin_post_id: str | None = None
     created_at: str | None = None
     message: str | None = None
     permalink: str | None = None
@@ -53,6 +66,11 @@ class PostSnapshot(BaseModel):
     post_id: str
     platform: PlatformName
     source_id: str
+    origin_post_id: str | None = None
+    origin_external_id: str | None = None
+    origin_permalink: str | None = None
+    propagation_kind: str | None = None
+    is_propagation: bool = False
     created_at: str | None = None
     message: str | None = None
     permalink: str | None = None
@@ -70,6 +88,33 @@ class PostSnapshot(BaseModel):
     author: AuthorSnapshot | None = None
     media_refs: list[MediaReference] = Field(default_factory=list)
     comments: list[CommentSnapshot] = Field(default_factory=list)
+
+
+class PropagationSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    propagation_id: str
+    platform: PlatformName
+    source_id: str
+    origin_post_id: str | None = None
+    origin_external_id: str | None = None
+    origin_permalink: str | None = None
+    propagation_kind: str
+    created_at: str | None = None
+    message: str | None = None
+    permalink: str | None = None
+    reactions: int = 0
+    shares: int = 0
+    comments_count: int = 0
+    views: int | None = None
+    forwards: int | None = None
+    reply_count: int | None = None
+    has_media: bool = False
+    media_type: str | None = None
+    reaction_breakdown_json: str | None = None
+    source_collector: str
+    raw_path: str | None = None
+    author: AuthorSnapshot | None = None
 
 
 class SourceSnapshot(BaseModel):
@@ -109,7 +154,7 @@ class CollectionManifest(BaseModel):
 class ClusterSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    item_type: Literal["post", "comment"]
+    item_type: Literal["post", "comment", "propagation"]
     cluster_id: str
     label: str
     description: str
@@ -121,7 +166,7 @@ class ClusterSummary(BaseModel):
 class StanceLabel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    item_type: Literal["post", "comment"]
+    item_type: Literal["post", "comment", "propagation"]
     item_id: str
     side_id: str
     label: Literal["support", "oppose", "neutral", "unclear"]

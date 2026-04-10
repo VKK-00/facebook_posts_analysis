@@ -6,6 +6,7 @@ import polars as pl
 def compute_support_metrics(
     stance_labels: pl.DataFrame,
     comment_memberships: pl.DataFrame,
+    comments: pl.DataFrame,
     run_id: str,
 ) -> pl.DataFrame:
     if "item_type" not in stance_labels.columns:
@@ -41,16 +42,58 @@ def compute_support_metrics(
         )
 
     global_metrics = _aggregate_scope(comment_stance, ["side_id"], "global", "all")
-    if comment_memberships.is_empty() or "cluster_id" not in comment_memberships.columns:
-        return global_metrics.with_columns(pl.lit(run_id).alias("run_id"))
+    joined_comments = (
+        comment_stance.join(
+            comments.select(
+                "comment_id",
+                "parent_post_id",
+                "parent_entity_type",
+                "parent_entity_id",
+                "origin_post_id",
+            ),
+            left_on="item_id",
+            right_on="comment_id",
+            how="left",
+        )
+        if not comments.is_empty()
+        else comment_stance
+    )
 
-    cluster_metrics = _aggregate_scope(
-        comment_stance.join(comment_memberships, left_on="item_id", right_on="item_id", how="left"),
-        ["cluster_id", "side_id"],
-        "narrative_cluster",
-        None,
-    ).rename({"cluster_id": "scope_id"})
-    return pl.concat([global_metrics, cluster_metrics], how="diagonal_relaxed").with_columns(pl.lit(run_id).alias("run_id"))
+    scoped_frames = [global_metrics]
+    if "parent_entity_type" in joined_comments.columns and "parent_entity_id" in joined_comments.columns:
+        direct_origin_metrics = _aggregate_scope(
+            joined_comments.filter(pl.col("parent_entity_type") == "post"),
+            ["parent_entity_id", "side_id"],
+            "origin_post",
+            None,
+        ).rename({"parent_entity_id": "scope_id"})
+        propagation_metrics = _aggregate_scope(
+            joined_comments.filter(pl.col("parent_entity_type") == "propagation"),
+            ["parent_entity_id", "side_id"],
+            "propagation",
+            None,
+        ).rename({"parent_entity_id": "scope_id"})
+        origin_plus_metrics = _aggregate_scope(
+            joined_comments.filter(pl.col("origin_post_id").is_not_null() & (pl.col("origin_post_id") != "")),
+            ["origin_post_id", "side_id"],
+            "origin_plus_propagations",
+            None,
+        ).rename({"origin_post_id": "scope_id"})
+        for frame in (direct_origin_metrics, propagation_metrics, origin_plus_metrics):
+            if not frame.is_empty():
+                scoped_frames.append(frame)
+
+    if not comment_memberships.is_empty() and "cluster_id" in comment_memberships.columns:
+        cluster_metrics = _aggregate_scope(
+            comment_stance.join(comment_memberships, left_on="item_id", right_on="item_id", how="left"),
+            ["cluster_id", "side_id"],
+            "narrative_cluster",
+            None,
+        ).rename({"cluster_id": "scope_id"})
+        if not cluster_metrics.is_empty():
+            scoped_frames.append(cluster_metrics)
+
+    return pl.concat(scoped_frames, how="diagonal_relaxed").with_columns(pl.lit(run_id).alias("run_id"))
 
 
 def _aggregate_scope(df: pl.DataFrame, group_columns: list[str], scope_type: str, static_scope_id: str | None) -> pl.DataFrame:

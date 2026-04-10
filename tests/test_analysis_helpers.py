@@ -32,18 +32,30 @@ def test_support_metrics_aggregate_comment_scope() -> None:
             {"item_type": "comment", "item_id": "c3", "cluster_id": "comment-1", "run_id": "r1"},
         ]
     )
+    comments = pl.DataFrame(
+        [
+            {"comment_id": "c1", "parent_post_id": "p1", "parent_entity_type": "post", "parent_entity_id": "p1", "origin_post_id": "p1"},
+            {"comment_id": "c2", "parent_post_id": "p2", "parent_entity_type": "propagation", "parent_entity_id": "prop1", "origin_post_id": "p1"},
+            {"comment_id": "c3", "parent_post_id": "p1", "parent_entity_type": "post", "parent_entity_id": "p1", "origin_post_id": "p1"},
+        ]
+    )
 
-    metrics = compute_support_metrics(stance, memberships, "r1")
+    metrics = compute_support_metrics(stance, memberships, comments, "r1")
     global_row = metrics.filter((pl.col("scope_type") == "global") & (pl.col("side_id") == "side_a")).to_dicts()[0]
+    origin_plus_row = metrics.filter(
+        (pl.col("scope_type") == "origin_plus_propagations") & (pl.col("scope_id") == "p1") & (pl.col("side_id") == "side_a")
+    ).to_dicts()[0]
 
     assert global_row["support_count"] == 1
     assert global_row["oppose_count"] == 1
     assert global_row["neutral_count"] == 1
     assert global_row["net_support"] == 0
+    assert origin_plus_row["support_count"] == 1
+    assert origin_plus_row["oppose_count"] == 1
 
 
 def test_support_metrics_handles_schema_less_empty_input() -> None:
-    metrics = compute_support_metrics(pl.DataFrame(), pl.DataFrame(), "r1")
+    metrics = compute_support_metrics(pl.DataFrame(), pl.DataFrame(), pl.DataFrame(), "r1")
     assert metrics.is_empty()
 
 
@@ -128,3 +140,39 @@ def test_report_service_builds_x_summary(project_config, project_paths) -> None:
     assert summary["total_quotes"] == 1
     assert summary["total_replies"] == 3
     assert summary["reaction_breakdown"][0]["reaction"] == "view_count"
+
+
+def test_report_service_builds_threads_and_instagram_summaries(project_config, project_paths) -> None:
+    service = ReportService(project_config, project_paths)
+    threads_posts = pl.DataFrame(
+        [
+            {
+                "views": 100,
+                "reactions": 5,
+                "shares": 2,
+                "forwards": 1,
+                "reply_count": 3,
+                "reaction_breakdown_json": '{"like": 5, "repost": 2}',
+            }
+        ]
+    )
+    instagram_posts = pl.DataFrame(
+        [
+            {
+                "reactions": 7,
+                "comments_count": 9,
+                "media_type": "reel",
+                "reaction_breakdown_json": '{"likes": 7}',
+            }
+        ]
+    )
+    comments = pl.DataFrame([{"reaction_breakdown_json": '{"likes": 1}'}])
+
+    threads_summary = service._threads_summary(threads_posts, comments)
+    instagram_summary = service._instagram_summary(instagram_posts, comments)
+
+    assert threads_summary["total_views"] == 100
+    assert threads_summary["total_reposts"] == 2
+    assert instagram_summary["total_likes"] == 7
+    assert instagram_summary["total_comments_visible"] == 9
+    assert instagram_summary["reels_count"] == 1

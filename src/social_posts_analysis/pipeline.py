@@ -5,11 +5,15 @@ from pathlib import Path
 from typing import Any
 
 from social_posts_analysis.collectors.base import BaseCollector, CollectorUnavailableError
+from social_posts_analysis.collectors.instagram_graph_api import InstagramGraphApiCollector
+from social_posts_analysis.collectors.instagram_web import InstagramWebCollector
 from social_posts_analysis.collectors.meta_api import MetaApiCollector
 from social_posts_analysis.collectors.public_web import PublicWebCollector
 from social_posts_analysis.collectors.telegram_bot_api import TelegramBotApiCollector
 from social_posts_analysis.collectors.telegram_mtproto import TelegramMtprotoCollector
 from social_posts_analysis.collectors.telegram_web import TelegramWebCollector
+from social_posts_analysis.collectors.threads_api import ThreadsApiCollector
+from social_posts_analysis.collectors.threads_web import ThreadsWebCollector
 from social_posts_analysis.collectors.x_api import XApiCollector
 from social_posts_analysis.collectors.x_web import XWebCollector
 from social_posts_analysis.config import ProjectConfig
@@ -76,6 +80,14 @@ class CollectionService:
             if self.config.collector.mode == "x_api":
                 return [XApiCollector(self.config)]
             return [XWebCollector(self.config)]
+        if self.config.source.platform == "threads":
+            if self.config.collector.mode == "threads_api":
+                return [ThreadsApiCollector(self.config)]
+            return [ThreadsWebCollector(self.config)]
+        if self.config.source.platform == "instagram":
+            if self.config.collector.mode == "instagram_graph_api":
+                return [InstagramGraphApiCollector(self.config)]
+            return [InstagramWebCollector(self.config)]
 
         mode = self.config.collector.mode
         collector_classes: list[type[Any]]

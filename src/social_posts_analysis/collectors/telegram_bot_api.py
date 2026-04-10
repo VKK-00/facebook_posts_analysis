@@ -136,10 +136,15 @@ class TelegramBotApiCollector(BaseCollector):
         message_id = self._message_id(message)
         post_id = f"telegram:{source_id}:{message_id}"
         raw_path = raw_store.write_json("telegram_bot_posts", slugify(post_id), message)
+        propagation_kind, origin_post_id, origin_external_id = self._propagation_metadata(message)
         return PostSnapshot(
             post_id=post_id,
             platform="telegram",
             source_id=source_id,
+            origin_post_id=origin_post_id,
+            origin_external_id=origin_external_id,
+            propagation_kind=propagation_kind,
+            is_propagation=propagation_kind is not None,
             created_at=self._created_at(message),
             message=self._message_text(message),
             permalink=self._message_permalink(chat, message_id),
@@ -237,6 +242,20 @@ class TelegramBotApiCollector(BaseCollector):
     @staticmethod
     def _is_automatic_forward(message: dict[str, Any]) -> bool:
         return bool(message.get("is_automatic_forward"))
+
+    @staticmethod
+    def _propagation_metadata(message: dict[str, Any]) -> tuple[str | None, str | None, str | None]:
+        forward_origin = message.get("forward_origin") or {}
+        if message.get("is_automatic_forward") or forward_origin:
+            message_id = (
+                (message.get("reply_to_message") or {}).get("message_id")
+                or message.get("forward_from_message_id")
+                or message.get("message_id")
+            )
+            origin_external_id = str(message_id) if message_id is not None else None
+            origin_post_id = f"telegram:origin:{origin_external_id}" if origin_external_id else None
+            return "forward", origin_post_id, origin_external_id
+        return None, None, None
 
     @staticmethod
     def _thread_id(message: dict[str, Any]) -> int | None:

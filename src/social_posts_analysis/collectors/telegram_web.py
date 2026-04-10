@@ -132,6 +132,11 @@ class TelegramWebCollector(BaseCollector):
                     post_id=post_id,
                     platform="telegram",
                     source_id=source_id,
+                    origin_post_id=f"telegram:origin:{item.get('forwarded_message_id')}" if item.get("forwarded_message_id") else None,
+                    origin_external_id=str(item.get("forwarded_message_id")) if item.get("forwarded_message_id") else None,
+                    origin_permalink=item.get("forwarded_permalink"),
+                    propagation_kind="forward" if item.get("forwarded_from_name") else None,
+                    is_propagation=bool(item.get("forwarded_from_name")),
                     created_at=created_at,
                     message=item.get("text"),
                     permalink=item.get("permalink"),
@@ -248,6 +253,7 @@ class TelegramWebCollector(BaseCollector):
                 const timeNode = node.querySelector('a.tgme_widget_message_date time');
                 const textNode = node.querySelector('.tgme_widget_message_text');
                 const replyNode = node.querySelector('.tgme_widget_message_reply');
+                const forwardedNode = node.querySelector('.tgme_widget_message_forwarded_from a, .tgme_widget_message_forwarded_from');
                 const reactionNodes = Array.from(node.querySelectorAll('.tgme_reaction'));
                 const reactionBreakdown = {};
                 for (const reactionNode of reactionNodes) {
@@ -275,6 +281,9 @@ class TelegramWebCollector(BaseCollector):
                   has_media: Boolean(mediaType),
                   media_type: mediaType,
                   author_name: (node.querySelector('.tgme_widget_message_owner_name')?.textContent || '').trim(),
+                  forwarded_from_name: forwardedNode ? forwardedNode.textContent.trim() : '',
+                  forwarded_permalink: forwardedNode?.href || '',
+                  forwarded_message_id: forwardedNode?.href ? ((forwardedNode.href.split('/').pop() || '').split(/[?#]/)[0]) : '',
                   reply_permalink: replyNode?.getAttribute('href') || '',
                   reply_text: replyNode ? replyNode.innerText.trim() : '',
                   reaction_breakdown: reactionBreakdown,

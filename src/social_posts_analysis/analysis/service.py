@@ -31,6 +31,7 @@ class AnalysisService:
             "embedding_provider": pl.String,
             "llm_provider": pl.String,
             "post_items": pl.Int64,
+            "propagation_items": pl.Int64,
             "comment_items": pl.Int64,
         },
         "detected_languages": {
@@ -89,7 +90,13 @@ class AnalysisService:
             raise RuntimeError("No normalized run found to analyze.")
 
         posts = self._load_table("posts").filter(pl.col("run_id") == resolved_run_id)
+        propagations = self._load_table("propagations").filter(pl.col("run_id") == resolved_run_id)
         comments = self._load_table("comments").filter(pl.col("run_id") == resolved_run_id)
+        origin_posts = (
+            posts.filter(~pl.col("is_propagation").fill_null(False))
+            if not posts.is_empty() and "is_propagation" in posts.columns
+            else posts
+        )
 
         detector = LanguageDetector(self.config.analysis.languages)
         providers = build_providers(self.config.providers.embeddings, self.config.providers.llm)
@@ -101,16 +108,25 @@ class AnalysisService:
         )
         stance_analyzer = StanceAnalyzer(providers.llm, self.config.sides)
 
-        post_items = self._items_from_frame(posts, "post")
+        post_items = self._items_from_frame(origin_posts, "post")
+        propagation_items = self._items_from_frame(propagations, "propagation")
         comment_items = self._items_from_frame(comments, "comment")
 
         language_rows = self._detect_languages(post_items, detector, resolved_run_id)
+        language_rows.extend(self._detect_languages(propagation_items, detector, resolved_run_id))
         language_rows.extend(self._detect_languages(comment_items, detector, resolved_run_id))
 
         post_embeddings = providers.embeddings.embed_texts([item["text"] for item in post_items])
+        propagation_embeddings = providers.embeddings.embed_texts([item["text"] for item in propagation_items])
         comment_embeddings = providers.embeddings.embed_texts([item["text"] for item in comment_items])
 
         post_clusters, post_memberships = clusterer.cluster_items("post", post_items, post_embeddings, resolved_run_id)
+        propagation_clusters, propagation_memberships = clusterer.cluster_items(
+            "propagation",
+            propagation_items,
+            propagation_embeddings,
+            resolved_run_id,
+        )
         comment_clusters, comment_memberships = clusterer.cluster_items(
             "comment",
             comment_items,
@@ -119,11 +135,13 @@ class AnalysisService:
         )
 
         stance_rows = stance_analyzer.label_items("post", post_items, resolved_run_id)
+        stance_rows.extend(stance_analyzer.label_items("propagation", propagation_items, resolved_run_id))
         stance_rows.extend(stance_analyzer.label_items("comment", comment_items, resolved_run_id))
 
         support_metrics = compute_support_metrics(
             pl.DataFrame(stance_rows) if stance_rows else pl.DataFrame(),
             pl.DataFrame(comment_memberships) if comment_memberships else pl.DataFrame(),
+            comments,
             resolved_run_id,
         )
 
@@ -133,6 +151,7 @@ class AnalysisService:
                 "embedding_provider": providers.summary["embeddings"],
                 "llm_provider": providers.summary["llm"],
                 "post_items": len(post_items),
+                "propagation_items": len(propagation_items),
                 "comment_items": len(comment_items),
             }
         ]
@@ -140,8 +159,14 @@ class AnalysisService:
         outputs = {
             "analysis_runs": self._persist_table("analysis_runs", analysis_run),
             "detected_languages": self._persist_table("detected_languages", language_rows),
-            "cluster_memberships": self._persist_table("cluster_memberships", [*post_memberships, *comment_memberships]),
-            "narrative_clusters": self._persist_table("narrative_clusters", [*post_clusters, *comment_clusters]),
+            "cluster_memberships": self._persist_table(
+                "cluster_memberships",
+                [*post_memberships, *propagation_memberships, *comment_memberships],
+            ),
+            "narrative_clusters": self._persist_table(
+                "narrative_clusters",
+                [*post_clusters, *propagation_clusters, *comment_clusters],
+            ),
             "stance_labels": self._persist_table("stance_labels", stance_rows),
             "support_metrics": self._persist_table(
                 "support_metrics",
@@ -159,8 +184,11 @@ class AnalysisService:
             (
                 pl.col("post_id")
                 if item_type == "post"
+                else pl.col("propagation_id")
+                if item_type == "propagation"
                 else pl.col("comment_id")
             ).alias("item_id"),
+            pl.lit(item_type).alias("item_type"),
             pl.col("message").fill_null("").alias("text"),
             pl.col("parent_post_id").fill_null("").alias("parent_post_id") if item_type == "comment" else pl.lit("").alias("parent_post_id"),
         )
@@ -180,7 +208,7 @@ class AnalysisService:
             prediction = detector.detect(item["text"])
             rows.append(
                 {
-                    "item_type": "comment" if item.get("parent_post_id") else "post",
+                    "item_type": item["item_type"],
                     "item_id": item["item_id"],
                     "language": prediction.language,
                     "confidence": prediction.confidence,

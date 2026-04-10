@@ -443,11 +443,21 @@ class PublicWebCollector(BaseCollector):
             payload_comments=payload.get("comments", []),
             raw_path=str(raw_path),
         )
+        propagation_kind, origin_post_id, origin_external_id, origin_permalink = self._propagation_metadata(
+            payload=payload,
+            post_text=post_text,
+            post_permalink=post_permalink,
+        )
 
         return PostSnapshot(
             post_id=post_id,
             platform="facebook",
             source_id=page_id,
+            origin_post_id=origin_post_id,
+            origin_external_id=origin_external_id,
+            origin_permalink=origin_permalink,
+            propagation_kind=propagation_kind,
+            is_propagation=propagation_kind is not None,
             created_at=resolved_published_at,
             message=post_text,
             permalink=post_permalink,
@@ -1067,6 +1077,11 @@ class PublicWebCollector(BaseCollector):
                 continue
             if not published_at and (self.config.date_range.start or self.config.date_range.end):
                 continue
+            propagation_kind, origin_post_id, origin_external_id, origin_permalink = self._propagation_metadata(
+                payload=candidate,
+                post_text=candidate.get("message") or "",
+                post_permalink=None,
+            )
             post = PostSnapshot(
                 post_id=stable_id(
                     page_id,
@@ -1075,6 +1090,11 @@ class PublicWebCollector(BaseCollector):
                 ),
                 platform="facebook",
                 source_id=page_id,
+                origin_post_id=origin_post_id,
+                origin_external_id=origin_external_id,
+                origin_permalink=origin_permalink,
+                propagation_kind=propagation_kind,
+                is_propagation=propagation_kind is not None,
                 created_at=published_at,
                 message=candidate.get("message"),
                 permalink=None,
@@ -1088,6 +1108,36 @@ class PublicWebCollector(BaseCollector):
             )
             posts.append(post)
         return posts
+
+    @staticmethod
+    def _propagation_metadata(
+        *,
+        payload: dict[str, Any],
+        post_text: str,
+        post_permalink: str | None,
+    ) -> tuple[str | None, str | None, str | None, str | None]:
+        joined_text = " ".join(
+            part
+            for part in [
+                post_text,
+                str(payload.get("body_text") or ""),
+                str(payload.get("meta_title") or ""),
+                str(payload.get("meta_description") or ""),
+                str(payload.get("reply_text") or ""),
+            ]
+            if part
+        ).lower()
+        if "shared a post" not in joined_text and "shared a memory" not in joined_text and "shared" not in joined_text:
+            return None, None, None, None
+        origin_permalink = (
+            payload.get("shared_permalink")
+            or payload.get("origin_permalink")
+            or payload.get("url")
+            or post_permalink
+        )
+        origin_external_id = PublicWebCollector._extract_numeric_media_id(origin_permalink or "") or None
+        origin_post_id = f"facebook:origin:{origin_external_id}" if origin_external_id else None
+        return "share", origin_post_id, origin_external_id, origin_permalink
 
     @staticmethod
     def _accept_mobile_cookies(page: Any) -> None:

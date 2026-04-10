@@ -254,3 +254,123 @@ def test_project_config_accepts_x_web_settings() -> None:
     assert config.source.platform == "x"
     assert config.collector.mode == "web"
     assert config.collector.x_web.enabled is True
+
+
+def test_project_config_accepts_threads_api_settings() -> None:
+    config = ProjectConfig.model_validate(
+        {
+            "source": {
+                "platform": "threads",
+                "source_name": "example_account",
+            },
+            "sides": [{"side_id": "a", "name": "A"}],
+            "collector": {
+                "mode": "threads_api",
+                "meta_api": {"enabled": False},
+                "public_web": {"enabled": False},
+                "telegram_mtproto": {
+                    "enabled": False,
+                    "session_file": None,
+                    "api_id": None,
+                    "api_hash": None,
+                },
+                "x_api": {"enabled": False, "bearer_token": None},
+                "threads_api": {"enabled": True, "access_token": "token"},
+                "threads_web": {"enabled": False},
+            },
+        }
+    )
+
+    assert config.source.platform == "threads"
+    assert config.collector.mode == "threads_api"
+    assert config.collector.threads_api.access_token == "token"
+
+
+def test_project_config_accepts_threads_web_settings() -> None:
+    config = ProjectConfig.model_validate(
+        {
+            "source": {
+                "platform": "threads",
+                "source_name": "example_account",
+            },
+            "sides": [{"side_id": "a", "name": "A"}],
+            "collector": {
+                "mode": "web",
+                "meta_api": {"enabled": False},
+                "public_web": {"enabled": False},
+                "telegram_mtproto": {
+                    "enabled": False,
+                    "session_file": None,
+                    "api_id": None,
+                    "api_hash": None,
+                },
+                "x_api": {"enabled": False, "bearer_token": None},
+                "threads_api": {"enabled": False, "access_token": None},
+                "threads_web": {"enabled": True},
+            },
+        }
+    )
+
+    assert config.source.platform == "threads"
+    assert config.collector.mode == "web"
+    assert config.collector.threads_web.enabled is True
+
+
+def test_project_config_accepts_instagram_graph_api_settings() -> None:
+    config = ProjectConfig.model_validate(
+        {
+            "source": {
+                "platform": "instagram",
+                "source_id": "17841400000000000",
+            },
+            "sides": [{"side_id": "a", "name": "A"}],
+            "collector": {
+                "mode": "instagram_graph_api",
+                "meta_api": {"enabled": False},
+                "public_web": {"enabled": False},
+                "telegram_mtproto": {
+                    "enabled": False,
+                    "session_file": None,
+                    "api_id": None,
+                    "api_hash": None,
+                },
+                "x_api": {"enabled": False, "bearer_token": None},
+                "instagram_graph_api": {"enabled": True, "access_token": "token"},
+                "instagram_web": {"enabled": False},
+            },
+        }
+    )
+
+    assert config.source.platform == "instagram"
+    assert config.collector.mode == "instagram_graph_api"
+    assert config.collector.instagram_graph_api.access_token == "token"
+
+
+def test_project_config_accepts_instagram_web_settings() -> None:
+    config = ProjectConfig.model_validate(
+        {
+            "source": {
+                "platform": "instagram",
+                "source_name": "example_account",
+            },
+            "sides": [{"side_id": "a", "name": "A"}],
+            "collector": {
+                "mode": "web",
+                "meta_api": {"enabled": False},
+                "public_web": {"enabled": False},
+                "telegram_mtproto": {
+                    "enabled": False,
+                    "session_file": None,
+                    "api_id": None,
+                    "api_hash": None,
+                },
+                "x_api": {"enabled": False, "bearer_token": None},
+                "instagram_graph_api": {"enabled": False, "access_token": None},
+                "instagram_web": {"enabled": True},
+            },
+        }
+    )
+
+    assert config.source.platform == "instagram"
+    assert config.collector.mode == "web"
+    assert config.collector.instagram_web.enabled is True

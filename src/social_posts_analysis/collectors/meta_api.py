@@ -94,11 +94,17 @@ class MetaApiCollector(BaseCollector):
         )
         attachments = self._extract_media_refs(payload)
         author_payload = payload.get("from") or {"id": payload.get("id"), "name": self.config.source.source_name}
+        propagation_kind, origin_post_id, origin_external_id, origin_permalink = self._propagation_metadata(payload)
 
         return PostSnapshot(
             post_id=post_id,
             platform="facebook",
             source_id=source_id,
+            origin_post_id=origin_post_id,
+            origin_external_id=origin_external_id,
+            origin_permalink=origin_permalink,
+            propagation_kind=propagation_kind,
+            is_propagation=propagation_kind is not None,
             created_at=payload.get("created_time"),
             message=payload.get("message"),
             permalink=payload.get("permalink_url"),
@@ -178,10 +184,10 @@ class MetaApiCollector(BaseCollector):
         endpoint = f"/{source_id}/feed"
         params: dict[str, Any] = {
             "fields": (
-                "id,message,created_time,permalink_url,from,"
+                "id,message,created_time,permalink_url,from,status_type,parent_id,link,"
                 "shares,reactions.limit(0).summary(true),"
                 "comments.limit(0).summary(true),"
-                "attachments{media_type,media,url,title,description}"
+                "attachments{media_type,media,url,title,description,target}"
             ),
             "limit": self.settings.page_size,
             "access_token": self.settings.access_token,
@@ -281,6 +287,20 @@ class MetaApiCollector(BaseCollector):
                 )
             )
         return refs
+
+    @staticmethod
+    def _propagation_metadata(payload: dict[str, Any]) -> tuple[str | None, str | None, str | None, str | None]:
+        status_type = str(payload.get("status_type") or "")
+        if "shared" not in status_type.lower() and not payload.get("parent_id"):
+            return None, None, None, None
+        origin_external_id = str(payload.get("parent_id") or "") or None
+        attachment_data = ((payload.get("attachments") or {}).get("data") or [])
+        attachment_target = attachment_data[0].get("target") if attachment_data else None
+        if origin_external_id is None and isinstance(attachment_target, dict) and attachment_target.get("id") is not None:
+            origin_external_id = str(attachment_target.get("id"))
+        origin_permalink = (attachment_data[0].get("url") if attachment_data else None) or payload.get("link")
+        origin_post_id = f"facebook:origin:{origin_external_id}" if origin_external_id else None
+        return "share", origin_post_id, origin_external_id, origin_permalink
 
     @staticmethod
     def _page_reference_from_url(url: str) -> str:

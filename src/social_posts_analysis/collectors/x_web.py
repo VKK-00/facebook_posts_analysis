@@ -120,11 +120,19 @@ class XWebCollector(BaseCollector):
                 "view_count": parse_compact_number(item.get("view_count")),
             }
             raw_path = raw_store.write_json("x_web_posts", slugify(post_id), item)
+            origin_external_id = item.get("origin_status_id") or None
             posts.append(
                 PostSnapshot(
                     post_id=post_id,
                     platform="x",
                     source_id=source_id,
+                    origin_post_id=f"x:origin:{origin_external_id}" if origin_external_id else None,
+                    origin_external_id=origin_external_id,
+                    origin_permalink=item.get("origin_permalink") or (
+                        f"https://x.com/i/status/{origin_external_id}" if origin_external_id else None
+                    ),
+                    propagation_kind=item.get("propagation_kind"),
+                    is_propagation=bool(item.get("propagation_kind")),
                     created_at=item.get("created_at"),
                     message=item.get("text"),
                     permalink=item.get("permalink"),
@@ -210,8 +218,13 @@ class XWebCollector(BaseCollector):
               const posts = articleNodes.map((node) => {
                 const permalinkNode = Array.from(node.querySelectorAll('a[href*="/status/"]'))
                   .find((anchor) => !anchor.href.includes('/analytics'));
+                const statusLinks = Array.from(node.querySelectorAll('a[href*="/status/"]'))
+                  .filter((anchor) => !anchor.href.includes('/analytics'));
                 const timeNode = node.querySelector('time');
                 const textNodes = Array.from(node.querySelectorAll('[data-testid="tweetText"]'));
+                const socialContext = Array.from(node.querySelectorAll('span'))
+                  .map((span) => (span.textContent || '').trim())
+                  .find((value) => /reposted|quoted/i.test(value)) || '';
                 const metric = (testId) => {
                   const metricNode = node.querySelector(`[data-testid="${testId}"]`);
                   return metricNode ? (metricNode.textContent || '').trim() : '';
@@ -229,6 +242,13 @@ class XWebCollector(BaseCollector):
                 return {
                   permalink: permalinkNode?.href || '',
                   status_id: permalinkNode ? (permalinkNode.href.split('/status/')[1] || '').split(/[/?#]/)[0] : '',
+                  origin_permalink: statusLinks.length > 1 ? (statusLinks[1]?.href || '') : '',
+                  origin_status_id: statusLinks.length > 1 ? ((statusLinks[1]?.href.split('/status/')[1] || '').split(/[/?#]/)[0]) : '',
+                  propagation_kind: /quoted/i.test(socialContext)
+                    ? 'quote'
+                    : /reposted/i.test(socialContext)
+                      ? 'repost'
+                      : '',
                   created_at: timeNode?.getAttribute('datetime') || null,
                   text: textNodes.length ? (textNodes[0].innerText || '').trim() : '',
                   author_name: authorName,
@@ -262,8 +282,13 @@ class XWebCollector(BaseCollector):
               const rows = articleNodes.map((node) => {
                 const permalinkNode = Array.from(node.querySelectorAll('a[href*="/status/"]'))
                   .find((anchor) => !anchor.href.includes('/analytics'));
+                const statusLinks = Array.from(node.querySelectorAll('a[href*="/status/"]'))
+                  .filter((anchor) => !anchor.href.includes('/analytics'));
                 const timeNode = node.querySelector('time');
                 const textNodes = Array.from(node.querySelectorAll('[data-testid="tweetText"]'));
+                const socialContext = Array.from(node.querySelectorAll('span'))
+                  .map((span) => (span.textContent || '').trim())
+                  .find((value) => /reposted|quoted/i.test(value)) || '';
                 const metric = (testId) => {
                   const metricNode = node.querySelector(`[data-testid="${testId}"]`);
                   return metricNode ? (metricNode.textContent || '').trim() : '';
@@ -276,6 +301,13 @@ class XWebCollector(BaseCollector):
                 return {
                   permalink: permalinkNode?.href || '',
                   status_id: permalinkNode ? (permalinkNode.href.split('/status/')[1] || '').split(/[/?#]/)[0] : '',
+                  origin_permalink: statusLinks.length > 1 ? (statusLinks[1]?.href || '') : '',
+                  origin_status_id: statusLinks.length > 1 ? ((statusLinks[1]?.href.split('/status/')[1] || '').split(/[/?#]/)[0]) : '',
+                  propagation_kind: /quoted/i.test(socialContext)
+                    ? 'quote'
+                    : /reposted/i.test(socialContext)
+                      ? 'repost'
+                      : '',
                   created_at: timeNode?.getAttribute('datetime') || null,
                   text: textNodes.length ? (textNodes[0].innerText || '').trim() : '',
                   author_name: authorName,

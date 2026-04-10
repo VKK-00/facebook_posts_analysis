@@ -264,10 +264,16 @@ class TelegramMtprotoCollector(BaseCollector):
         source_id = self._stringify(self._entity_id(source_entity)) or self._source_reference()
         replies = getattr(message, "replies", None)
         reply_count = self._safe_int(getattr(replies, "replies", None))
+        propagation_kind, origin_post_id, origin_external_id, origin_permalink = self._propagation_metadata(message)
         return PostSnapshot(
             post_id=post_id,
             platform="telegram",
             source_id=source_id,
+            origin_post_id=origin_post_id,
+            origin_external_id=origin_external_id,
+            origin_permalink=origin_permalink,
+            propagation_kind=propagation_kind,
+            is_propagation=propagation_kind is not None,
             created_at=self._iso_datetime(self._message_datetime(message)),
             message=self._message_text(message),
             permalink=self._message_permalink(source_entity, message),
@@ -352,6 +358,24 @@ class TelegramMtprotoCollector(BaseCollector):
                 media_type=media_type,
             )
         ]
+
+    def _propagation_metadata(self, message: Any) -> tuple[str | None, str | None, str | None, str | None]:
+        forward_info = getattr(message, "fwd_from", None)
+        if forward_info is None and isinstance(message, dict):
+            forward_info = message.get("fwd_from")
+        if forward_info is None:
+            return None, None, None, None
+
+        saved_from_msg_id = getattr(forward_info, "saved_from_msg_id", None)
+        if saved_from_msg_id is None and isinstance(forward_info, dict):
+            saved_from_msg_id = forward_info.get("saved_from_msg_id")
+        from_name = getattr(forward_info, "from_name", None)
+        if from_name is None and isinstance(forward_info, dict):
+            from_name = forward_info.get("from_name")
+
+        origin_external_id = str(saved_from_msg_id or from_name or self._message_id(message))
+        origin_post_id = f"telegram:origin:{origin_external_id}"
+        return "forward", origin_post_id, origin_external_id, None
 
     @staticmethod
     def _message_id(message: Any) -> int:

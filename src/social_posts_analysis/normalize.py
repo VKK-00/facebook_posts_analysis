@@ -15,6 +15,8 @@ from social_posts_analysis.utils import read_json
 class NormalizationService:
     TABLE_KEYS = {
         "posts": ["post_id"],
+        "propagations": ["propagation_id"],
+        "propagation_edges": ["propagation_id"],
         "comments": ["comment_id"],
         "comment_edges": ["comment_id"],
         "authors": ["author_id"],
@@ -26,6 +28,11 @@ class NormalizationService:
             "post_id": pl.String,
             "platform": pl.String,
             "source_id": pl.String,
+            "origin_post_id": pl.String,
+            "origin_external_id": pl.String,
+            "origin_permalink": pl.String,
+            "propagation_kind": pl.String,
+            "is_propagation": pl.Boolean,
             "author_id": pl.String,
             "created_at": pl.String,
             "message": pl.String,
@@ -43,13 +50,49 @@ class NormalizationService:
             "raw_path": pl.String,
             "run_id": pl.String,
         },
+        "propagations": {
+            "propagation_id": pl.String,
+            "platform": pl.String,
+            "source_id": pl.String,
+            "origin_post_id": pl.String,
+            "origin_external_id": pl.String,
+            "origin_permalink": pl.String,
+            "propagation_kind": pl.String,
+            "author_id": pl.String,
+            "created_at": pl.String,
+            "message": pl.String,
+            "permalink": pl.String,
+            "reactions": pl.Int64,
+            "shares": pl.Int64,
+            "comments_count": pl.Int64,
+            "views": pl.Int64,
+            "forwards": pl.Int64,
+            "reply_count": pl.Int64,
+            "has_media": pl.Boolean,
+            "media_type": pl.String,
+            "reaction_breakdown_json": pl.String,
+            "source_collector": pl.String,
+            "raw_path": pl.String,
+            "run_id": pl.String,
+        },
+        "propagation_edges": {
+            "propagation_id": pl.String,
+            "origin_post_id": pl.String,
+            "origin_external_id": pl.String,
+            "propagation_kind": pl.String,
+            "platform": pl.String,
+            "run_id": pl.String,
+        },
         "comments": {
             "comment_id": pl.String,
             "platform": pl.String,
             "parent_post_id": pl.String,
+            "parent_entity_type": pl.String,
+            "parent_entity_id": pl.String,
             "parent_comment_id": pl.String,
             "reply_to_message_id": pl.String,
             "thread_root_post_id": pl.String,
+            "origin_post_id": pl.String,
             "author_id": pl.String,
             "created_at": pl.String,
             "message": pl.String,
@@ -64,9 +107,12 @@ class NormalizationService:
         "comment_edges": {
             "comment_id": pl.String,
             "parent_post_id": pl.String,
+            "parent_entity_type": pl.String,
+            "parent_entity_id": pl.String,
             "parent_comment_id": pl.String,
             "reply_to_message_id": pl.String,
             "thread_root_post_id": pl.String,
+            "origin_post_id": pl.String,
             "depth": pl.Int64,
             "run_id": pl.String,
         },
@@ -95,6 +141,7 @@ class NormalizationService:
             "fallback_used": pl.Boolean,
             "warning_count": pl.Int64,
             "post_count": pl.Int64,
+            "propagation_count": pl.Int64,
             "comment_count": pl.Int64,
             "platform": pl.String,
             "source_id": pl.String,
@@ -121,6 +168,8 @@ class NormalizationService:
         manifest = self._merge_manifests(resolved_run_id, manifests)
 
         posts_records: list[dict[str, Any]] = []
+        propagation_records: list[dict[str, Any]] = []
+        propagation_edges: list[dict[str, Any]] = []
         comments_records: list[dict[str, Any]] = []
         comment_edges: list[dict[str, Any]] = []
         authors: list[dict[str, Any]] = []
@@ -138,11 +187,17 @@ class NormalizationService:
             )
 
         for post in manifest.posts:
+            origin_post_id = post.origin_post_id or None
             posts_records.append(
                 {
                     "post_id": post.post_id,
                     "platform": post.platform,
                     "source_id": post.source_id,
+                    "origin_post_id": origin_post_id,
+                    "origin_external_id": post.origin_external_id,
+                    "origin_permalink": post.origin_permalink,
+                    "propagation_kind": post.propagation_kind,
+                    "is_propagation": post.is_propagation,
                     "author_id": post.author.author_id if post.author else None,
                     "created_at": post.created_at,
                     "message": post.message,
@@ -161,6 +216,44 @@ class NormalizationService:
                     "run_id": manifest.run_id,
                 }
             )
+            if post.is_propagation:
+                propagation_records.append(
+                    {
+                        "propagation_id": post.post_id,
+                        "platform": post.platform,
+                        "source_id": post.source_id,
+                        "origin_post_id": origin_post_id,
+                        "origin_external_id": post.origin_external_id,
+                        "origin_permalink": post.origin_permalink,
+                        "propagation_kind": post.propagation_kind or "unknown",
+                        "author_id": post.author.author_id if post.author else None,
+                        "created_at": post.created_at,
+                        "message": post.message,
+                        "permalink": post.permalink,
+                        "reactions": post.reactions,
+                        "shares": post.shares,
+                        "comments_count": post.comments_count,
+                        "views": post.views,
+                        "forwards": post.forwards,
+                        "reply_count": post.reply_count,
+                        "has_media": post.has_media,
+                        "media_type": post.media_type,
+                        "reaction_breakdown_json": post.reaction_breakdown_json,
+                        "source_collector": post.source_collector,
+                        "raw_path": post.raw_path,
+                        "run_id": manifest.run_id,
+                    }
+                )
+                propagation_edges.append(
+                    {
+                        "propagation_id": post.post_id,
+                        "origin_post_id": origin_post_id,
+                        "origin_external_id": post.origin_external_id,
+                        "propagation_kind": post.propagation_kind or "unknown",
+                        "platform": post.platform,
+                        "run_id": manifest.run_id,
+                    }
+                )
             if post.author and post.author.author_id:
                 authors.append(
                     {
@@ -184,14 +277,19 @@ class NormalizationService:
                     }
                 )
             for comment in post.comments:
+                parent_entity_type = "propagation" if post.is_propagation else "post"
+                origin_for_comment = origin_post_id if post.is_propagation and origin_post_id else post.post_id
                 comments_records.append(
                     {
                         "comment_id": comment.comment_id,
                         "platform": comment.platform,
                         "parent_post_id": comment.parent_post_id,
+                        "parent_entity_type": comment.parent_entity_type or parent_entity_type,
+                        "parent_entity_id": comment.parent_entity_id or post.post_id,
                         "parent_comment_id": comment.parent_comment_id,
                         "reply_to_message_id": comment.reply_to_message_id,
                         "thread_root_post_id": comment.thread_root_post_id,
+                        "origin_post_id": comment.origin_post_id or origin_for_comment,
                         "author_id": comment.author.author_id if comment.author else None,
                         "created_at": comment.created_at,
                         "message": comment.message,
@@ -208,9 +306,12 @@ class NormalizationService:
                     {
                         "comment_id": comment.comment_id,
                         "parent_post_id": comment.parent_post_id,
+                        "parent_entity_type": comment.parent_entity_type or parent_entity_type,
+                        "parent_entity_id": comment.parent_entity_id or post.post_id,
                         "parent_comment_id": comment.parent_comment_id,
                         "reply_to_message_id": comment.reply_to_message_id,
                         "thread_root_post_id": comment.thread_root_post_id,
+                        "origin_post_id": comment.origin_post_id or origin_for_comment,
                         "depth": comment.depth,
                         "run_id": manifest.run_id,
                     }
@@ -235,7 +336,8 @@ class NormalizationService:
                 "status": manifest.status,
                 "fallback_used": manifest.fallback_used,
                 "warning_count": len(manifest.warnings),
-                "post_count": len(posts_records),
+                "post_count": len([record for record in posts_records if not record.get("is_propagation")]),
+                "propagation_count": len(propagation_records),
                 "comment_count": len(comments_records),
                 "platform": manifest.source.platform,
                 "source_id": manifest.source.source_id,
@@ -250,6 +352,8 @@ class NormalizationService:
 
         outputs = {
             "posts": self._persist_table("posts", posts_records),
+            "propagations": self._persist_table("propagations", propagation_records),
+            "propagation_edges": self._persist_table("propagation_edges", propagation_edges),
             "comments": self._persist_table("comments", comments_records),
             "comment_edges": self._persist_table("comment_edges", comment_edges),
             "authors": self._persist_table("authors", authors),
@@ -360,6 +464,11 @@ class NormalizationService:
                 "created_at": existing.created_at or incoming.created_at,
                 "message": incoming.message if len(incoming.message or "") > len(existing.message or "") else existing.message,
                 "permalink": existing.permalink or incoming.permalink,
+                "origin_post_id": existing.origin_post_id or incoming.origin_post_id,
+                "origin_external_id": existing.origin_external_id or incoming.origin_external_id,
+                "origin_permalink": existing.origin_permalink or incoming.origin_permalink,
+                "propagation_kind": existing.propagation_kind or incoming.propagation_kind,
+                "is_propagation": existing.is_propagation or incoming.is_propagation,
                 "reactions": max(existing.reactions, incoming.reactions),
                 "shares": max(existing.shares, incoming.shares),
                 "comments_count": max(existing.comments_count, incoming.comments_count, len(merged_comments)),
@@ -382,9 +491,12 @@ class NormalizationService:
             return incoming.model_copy(deep=True)
         return existing.model_copy(
             update={
+                "parent_entity_type": existing.parent_entity_type or incoming.parent_entity_type,
+                "parent_entity_id": existing.parent_entity_id or incoming.parent_entity_id,
                 "parent_comment_id": existing.parent_comment_id or incoming.parent_comment_id,
                 "reply_to_message_id": existing.reply_to_message_id or incoming.reply_to_message_id,
                 "thread_root_post_id": existing.thread_root_post_id or incoming.thread_root_post_id,
+                "origin_post_id": existing.origin_post_id or incoming.origin_post_id,
                 "created_at": existing.created_at or incoming.created_at,
                 "message": incoming.message if len(incoming.message or "") > len(existing.message or "") else existing.message,
                 "permalink": existing.permalink or incoming.permalink,

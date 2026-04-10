@@ -8,6 +8,7 @@ Source snapshot:
 - Source ID: `{{ source_id }}`
 - Source type: `{{ source_type }}`
 - Posts collected: `{{ post_count }}`
+- Propagation instances: `{{ propagation_count }}`
 - Comments collected: `{{ comment_count }}`
 - Source runs merged: `{{ source_run_count }}`
 - Embeddings provider: `{{ providers.get("embedding_provider", "n/a") }}`
@@ -43,6 +44,47 @@ X metrics:
 {% endif %}
 {% endif %}
 
+{% if threads_summary %}
+Threads metrics:
+- Total views: `{{ threads_summary.total_views }}`
+- Total likes: `{{ threads_summary.total_likes }}`
+- Total reposts: `{{ threads_summary.total_reposts }}`
+- Total quotes: `{{ threads_summary.total_quotes }}`
+- Total replies: `{{ threads_summary.total_replies }}`
+{% if threads_summary.reaction_breakdown %}
+- Reaction breakdown:
+{% for row in threads_summary.reaction_breakdown %}
+  - `{{ row.reaction }}`: {{ row.count }}
+{% endfor %}
+{% endif %}
+{% endif %}
+
+{% if instagram_summary %}
+Instagram metrics:
+- Total likes: `{{ instagram_summary.total_likes }}`
+- Visible comments counter total: `{{ instagram_summary.total_comments_visible }}`
+- Extracted comments: `{{ instagram_summary.total_comments_extracted }}`
+- Reels detected: `{{ instagram_summary.reels_count }}`
+{% if instagram_summary.reaction_breakdown %}
+- Reaction breakdown:
+{% for row in instagram_summary.reaction_breakdown %}
+  - `{{ row.reaction }}`: {{ row.count }}
+{% endfor %}
+{% endif %}
+{% endif %}
+
+{% if propagation_summary %}
+Propagation summary:
+- Instances found: `{{ propagation_summary.total_instances }}`
+- Instances with extracted comments: `{{ propagation_summary.with_comments }}`
+{% if propagation_summary.kinds %}
+- By kind:
+{% for row in propagation_summary.kinds %}
+  - `{{ row.propagation_kind or "unknown" }}`: {{ row.count }}
+{% endfor %}
+{% endif %}
+{% endif %}
+
 {% if source_run_ids %}
 Source runs:
 {% for source_run_id in source_run_ids %}
@@ -64,6 +106,39 @@ Source runs:
 | `{{ row.side_id }}` | {{ row.support_count }} | {{ row.oppose_count }} | {{ row.neutral_count }} | {{ row.unclear_count }} | {{ "%.2f"|format(row.support_ratio) }} | {{ row.net_support }} |
 {% endfor %}
 
+## Origin Post Support
+{% if origin_support %}
+| Origin Post | Side | Support | Oppose | Neutral | Unclear | Support Ratio | Net Support |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+{% for row in origin_support %}
+| `{{ row.scope_id }}` | `{{ row.side_id }}` | {{ row.support_count }} | {{ row.oppose_count }} | {{ row.neutral_count }} | {{ row.unclear_count }} | {{ "%.2f"|format(row.support_ratio) }} | {{ row.net_support }} |
+{% endfor %}
+{% else %}
+- No direct origin-post support rows were computed.
+{% endif %}
+
+## Origin Plus Propagations Support
+{% if origin_plus_support %}
+| Origin Scope | Side | Support | Oppose | Neutral | Unclear | Support Ratio | Net Support |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+{% for row in origin_plus_support %}
+| `{{ row.scope_id }}` | `{{ row.side_id }}` | {{ row.support_count }} | {{ row.oppose_count }} | {{ row.neutral_count }} | {{ row.unclear_count }} | {{ "%.2f"|format(row.support_ratio) }} | {{ row.net_support }} |
+{% endfor %}
+{% else %}
+- No aggregated origin-plus-propagation support rows were computed.
+{% endif %}
+
+## Propagation Support
+{% if propagation_support %}
+| Propagation | Side | Support | Oppose | Neutral | Unclear | Support Ratio | Net Support |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+{% for row in propagation_support %}
+| `{{ row.scope_id }}` | `{{ row.side_id }}` | {{ row.support_count }} | {{ row.oppose_count }} | {{ row.neutral_count }} | {{ row.unclear_count }} | {{ "%.2f"|format(row.support_ratio) }} | {{ row.net_support }} |
+{% endfor %}
+{% else %}
+- No propagation support rows were computed.
+{% endif %}
+
 ## Coverage Gaps
 {% if coverage_gaps %}
 {% for row in coverage_gaps %}
@@ -72,6 +147,16 @@ Source runs:
 {% endfor %}
 {% else %}
 - No major visibility gaps detected between visible comment counters and extracted comment texts.
+{% endif %}
+
+## Propagation Coverage Gaps
+{% if propagation_coverage_gaps %}
+{% for row in propagation_coverage_gaps %}
+- Propagation `{{ row.propagation_id }}`: visible={{ row.comments_count }}, extracted={{ row.extracted_comment_count }}, gap={{ row.comment_gap }}
+  {{ row.propagation_excerpt }}
+{% endfor %}
+{% else %}
+- No major visibility gaps detected for propagated instances.
 {% endif %}
 
 ## Reply Depth
@@ -83,6 +168,12 @@ Source runs:
 
 ## Top Post Narratives
 {% for cluster in post_clusters %}
+- `{{ cluster.cluster_id }}`: **{{ cluster.label }}** ({{ cluster.member_count }} items)
+  {{ cluster.description }}
+{% endfor %}
+
+## Top Propagation Narratives
+{% for cluster in propagation_clusters %}
 - `{{ cluster.cluster_id }}`: **{{ cluster.label }}** ({{ cluster.member_count }} items)
   {{ cluster.description }}
 {% endfor %}
@@ -123,6 +214,16 @@ Source runs:
 - Post `{{ thread.post_id }}` / side `{{ thread.side_id }}`: support={{ thread.support_count }}, oppose={{ thread.oppose_count }}, conflict={{ thread.conflict_score }}
   {{ thread.post_excerpt }}
 {% endfor %}
+
+## Top Propagated Items
+{% if top_propagated_items %}
+{% for row in top_propagated_items %}
+- Origin `{{ row.origin_post_id }}`: instances={{ row.propagation_count }}, propagation_comments={{ row.propagation_comment_count }}
+  {{ row.origin_excerpt }}
+{% endfor %}
+{% else %}
+- No propagated instances were linked back to origin posts in this run.
+{% endif %}
 
 ## Language Mix
 | Item Type | Language | Count |

@@ -84,6 +84,49 @@ collector:
       profile_directory: "Default"
       copy_profile: true
       temp_root_dir: null
+  threads_api:
+    enabled: false
+    base_url: "https://graph.threads.net/v1.0"
+    access_token: null
+    page_size: 100
+    timeout_seconds: 30
+    max_retries: 3
+  threads_web:
+    enabled: false
+    headless: true
+    browser_channel: null
+    max_scrolls: 8
+    wait_after_scroll_ms: 1500
+    timeout_seconds: 30
+    authenticated_browser:
+      enabled: false
+      browser: "chrome"
+      user_data_dir: null
+      profile_directory: "Default"
+      copy_profile: true
+      temp_root_dir: null
+  instagram_graph_api:
+    enabled: false
+    api_version: "v25.0"
+    base_url: "https://graph.facebook.com"
+    access_token: null
+    page_size: 100
+    timeout_seconds: 30
+    max_retries: 3
+  instagram_web:
+    enabled: false
+    headless: true
+    browser_channel: null
+    max_scrolls: 8
+    wait_after_scroll_ms: 1500
+    timeout_seconds: 30
+    authenticated_browser:
+      enabled: false
+      browser: "chrome"
+      user_data_dir: null
+      profile_directory: "Default"
+      copy_profile: true
+      temp_root_dir: null
 
 sides:
   - side_id: "example_actor"

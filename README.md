@@ -1,36 +1,35 @@
 # Social Posts Analysis
 
-Local-first Python pipeline for collecting posts and comments from multiple social platforms, then analyzing narratives, stance, support, and conflict patterns.
+Local-first pipeline for collecting posts, replies, reposts, and discussion threads across social platforms, then analyzing narratives, stance, support, conflict, and propagation.
 
-Current supported platforms:
+The project stores all outputs locally and is built around one configured source per run.
 
-- Facebook via Meta API or Playwright web collection
-- Telegram via MTProto session access or public web collection from `t.me/s/...`
-- X via official X API v2 or Playwright web collection
+## Platform Support
 
-Outputs are stored locally and can be reviewed in DuckDB, parquet, CSV, XLSX, Markdown, and HTML.
+Support is intentionally tiered. The project does not claim equal coverage across every network.
+
+- `facebook`: Meta API, public web, authenticated browser web, propagation via visible shares and share comments on a best-effort basis.
+- `telegram`: MTProto, public web, Bot API update queue, linked discussion trees, visible forwards on a best-effort basis.
+- `x`: official X API v2, public web, quotes and reposts as first-class propagation objects.
+- `threads`: official Threads API for owned-account scenarios, best-effort public web collector, quote/repost propagation where visible.
+- `instagram`: Instagram Graph API for owned professional accounts, best-effort public web collector, comments and reels supported, propagation coverage limited to observable surfaces.
 
 ## What The Project Does
 
-- collects posts/messages and comments/replies for one configured source per run
-- stores raw snapshots per run under `data/raw/<run_id>/`
-- normalizes collected data into parquet files and DuckDB tables
+- collects source posts or messages for one configured account, page, or channel
+- collects comments, replies, and discussion trees where the platform exposes them
+- detects visible propagation instances such as shares, forwards, quotes, and repost-like copies
+- stores raw snapshots under `data/raw/<run_id>/`
+- normalizes data into parquet files and DuckDB tables
 - detects language for `ru`, `uk`, and `en`
-- groups posts and comments into narrative clusters
+- clusters posts, propagations, and comments into narrative groups
 - labels stance toward configured sides or actors
-- computes support metrics from comment/reply texts
+- computes support metrics for:
+  - direct origin-post comments
+  - propagation instances
+  - aggregated `origin_plus_propagations`
 - exports review files for manual corrections
 - renders Markdown, HTML, CSV, and XLSX reports
-
-Current codebase additions include:
-
-- platform-aware `source` model instead of Facebook-only `page` naming
-- Telegram MTProto collector with linked-discussion support
-- authenticated browser profile support for Facebook web collection
-- multi-pass collection runs
-- merged normalized snapshots from several source runs
-- reply-depth extraction for both Facebook and Telegram discussion trees
-- coverage-gap reporting for posts where visible counters exceed extracted text comments
 
 ## Project Layout
 
@@ -47,11 +46,13 @@ tests/
 
 - Python 3.12+
 - recommended: `uv`
-- Playwright plus Chromium if using Facebook web collection
-- Playwright plus Chromium if using Telegram or X web collection
-- a valid Meta token if using the Facebook API collector
-- Telegram API credentials and an authorized session file if using Telegram MTProto
-- an X bearer token if using the X API collector
+- Playwright plus Chromium for web collectors
+- Meta token for Facebook API collection
+- Telegram API credentials and an authorized session file for MTProto
+- Telegram bot token for Bot API mode
+- X bearer token for X API mode
+- Threads access token for Threads API mode
+- Instagram access token plus an owned professional account for Instagram Graph API mode
 
 ## Installation
 
@@ -79,7 +80,7 @@ Then install the package:
 python -m pip install -e .[dev]
 ```
 
-If you plan to use Playwright:
+If you plan to use web collectors:
 
 ```bash
 python -m playwright install chromium
@@ -87,23 +88,22 @@ python -m playwright install chromium
 
 ## Configuration
 
-The checked-in `config/project.yaml` is a safe public template. Treat it as an example, not as a real working target-specific config.
-
-For actual runs, create a private local file such as `config/project.local.yaml` and pass it explicitly with `--config`. That local file should contain the real source target, date range, browser profile paths, API tokens, MTProto session path, and provider settings.
+The checked-in [project.yaml](C:\Coding projects\facebook_posts_analysis\config\project.yaml) is a safe public template. For real runs, create a private local file such as `config/project.local.yaml` and pass it explicitly with `--config`.
 
 Important top-level settings:
 
-- `source.platform`: `facebook`, `telegram`, or `x`
+- `source.platform`: `facebook`, `telegram`, `x`, `threads`, or `instagram`
 - `source.url`, `source.source_id`, or `source.source_name`
 - `source.telegram.discussion_chat_id`
 - `date_range.start` and `date_range.end`
-- `collector.mode`: `api`, `web`, `hybrid`, `mtproto`, `bot_api`, or `x_api`
+- `collector.mode`: `api`, `web`, `hybrid`, `mtproto`, `bot_api`, `x_api`, `threads_api`, or `instagram_graph_api`
 - `collector.multi_pass_runs`
 - `collector.wait_between_passes_seconds`
 - `normalization.merge_recent_runs`
 - `normalization.source_run_ids`
-- `sides`: stance targets
-- `providers.embeddings` and `providers.llm`
+- `sides`
+- `providers.embeddings`
+- `providers.llm`
 
 Environment variables supported by default:
 
@@ -115,6 +115,8 @@ Environment variables supported by default:
 - `TELEGRAM_API_HASH`
 - `TELEGRAM_BOT_TOKEN`
 - `X_BEARER_TOKEN`
+- `THREADS_ACCESS_TOKEN`
+- `INSTAGRAM_ACCESS_TOKEN`
 - `EMBEDDING_BASE_URL`
 - `EMBEDDING_API_KEY`
 - `LLM_BASE_URL`
@@ -122,16 +124,22 @@ Environment variables supported by default:
 
 ## Migration Note
 
-This repository used to be Facebook-only. Existing configs must be migrated from:
+The codebase used to be Facebook-only.
 
-- `page.url`, `page.page_id`, `page.page_name`
+Existing configs must be migrated from:
+
+- `page.url`
+- `page.page_id`
+- `page.page_name`
 
 to:
 
 - `source.platform: facebook`
-- `source.url`, `source.source_id`, `source.source_name`
+- `source.url`
+- `source.source_id`
+- `source.source_name`
 
-The package and CLI were also renamed:
+Package and CLI names were also changed:
 
 - old package: `facebook_posts_analysis`
 - new package: `social_posts_analysis`
@@ -157,11 +165,7 @@ Copy-Item config/project.yaml config/project.local.yaml
 2. Edit `config/project.local.yaml`.
 3. Run one of the modes below with `--config config/project.local.yaml`.
 
-### Facebook Public Web Collection
-
-Use this when you want public-only scraping without a logged-in browser.
-
-Minimal settings:
+### Facebook Public Web
 
 ```yaml
 source:
@@ -184,17 +188,7 @@ Run:
 social-posts-analysis run-many --config config/project.local.yaml --passes 3
 ```
 
-Expected result:
-
-- posts and visible comments collected from public Facebook sources
-- best-effort coverage only
-- repeated passes can improve coverage
-
-### Facebook Authenticated Browser Collection
-
-Use this when the public DOM is too shallow and your local browser session can see more content.
-
-Minimal settings:
+### Facebook Authenticated Web
 
 ```yaml
 source:
@@ -214,35 +208,12 @@ collector:
 
 Optional environment variables:
 
-```bash
-export SOCIAL_BROWSER_USER_DATA_DIR="/path/to/browser/User Data"
-export SOCIAL_BROWSER_PROFILE_DIRECTORY="Default"
-```
-
-Windows PowerShell:
-
 ```powershell
 $env:SOCIAL_BROWSER_USER_DATA_DIR="C:\Users\<user>\AppData\Local\Google\Chrome\User Data"
 $env:SOCIAL_BROWSER_PROFILE_DIRECTORY="Default"
 ```
 
-Run:
-
-```bash
-social-posts-analysis run-many --config config/project.local.yaml --passes 3
-```
-
-Expected result:
-
-- deeper comment extraction than public-only mode
-- still limited to what the logged-in account can see
-- no credentials stored in the project
-
-### Facebook Meta API Collection
-
-Use this when the target object and Meta permissions allow API access.
-
-Minimal settings:
+### Facebook Meta API
 
 ```yaml
 source:
@@ -255,34 +226,12 @@ collector:
     enabled: true
 ```
 
-Environment variable:
-
-```bash
-export META_ACCESS_TOKEN="your-token"
-```
-
-Windows PowerShell:
-
 ```powershell
 $env:META_ACCESS_TOKEN="your-token"
-```
-
-Run:
-
-```bash
 social-posts-analysis run-all --config config/project.local.yaml
 ```
 
-Expected result:
-
-- more stable structure than web scraping
-- still depends on Meta permissions and target object type
-
-### Telegram Public Web Collection
-
-Use this when the Telegram source is public and visible on `t.me/s/...`, and you do not want to use MTProto credentials.
-
-Minimal settings:
+### Telegram Public Web
 
 ```yaml
 source:
@@ -293,47 +242,21 @@ source:
 
 collector:
   mode: "web"
-  meta_api:
-    enabled: false
-  public_web:
-    enabled: false
   telegram_web:
     enabled: true
   telegram_mtproto:
     enabled: false
 ```
 
-Run:
-
-```bash
-social-posts-analysis run-all --config config/project.local.yaml
-```
-
-Expected result:
-
-- public channel posts collected from `t.me/s/<channel>`
-- if `source.telegram.discussion_chat_id` points to a public discussion feed, the collector will try to map discussion messages back to channel posts
-- if no public discussion feed is configured or visible, the run still succeeds with posts only and a warning
-
-### Telegram MTProto Collection
-
-Use this when you want one Telegram channel per run, optionally with its linked discussion chat.
-
-Minimal settings:
+### Telegram MTProto
 
 ```yaml
 source:
   platform: "telegram"
   source_name: "example_channel"
-  telegram:
-    discussion_chat_id: null
 
 collector:
   mode: "mtproto"
-  meta_api:
-    enabled: false
-  public_web:
-    enabled: false
   telegram_mtproto:
     enabled: true
     session_file: ".sessions/example_channel"
@@ -341,40 +264,14 @@ collector:
     api_hash: "your-api-hash"
 ```
 
-Environment variables:
-
-```bash
-export TELEGRAM_SESSION_FILE=".sessions/example_channel"
-export TELEGRAM_API_ID="123456"
-export TELEGRAM_API_HASH="your-api-hash"
-```
-
-Windows PowerShell:
-
 ```powershell
 $env:TELEGRAM_SESSION_FILE=".sessions/example_channel"
 $env:TELEGRAM_API_ID="123456"
 $env:TELEGRAM_API_HASH="your-api-hash"
-```
-
-Run:
-
-```bash
 social-posts-analysis run-all --config config/project.local.yaml
 ```
 
-Expected result:
-
-- channel posts collected in the configured date range
-- linked discussion comments/replies collected when the discussion chat exists and is visible to the session
-- service messages filtered but counted in metadata
-- if there is no linked discussion chat, the run still succeeds with posts only and a warning
-
-### Telegram Bot API Collection
-
-Use this when you control a bot that already sees channel and discussion updates.
-
-Minimal settings:
+### Telegram Bot API
 
 ```yaml
 source:
@@ -385,49 +282,18 @@ source:
 
 collector:
   mode: "bot_api"
-  meta_api:
-    enabled: false
-  public_web:
-    enabled: false
-  telegram_web:
-    enabled: false
-  telegram_mtproto:
-    enabled: false
   telegram_bot_api:
     enabled: true
     bot_token: null
     consume_updates: false
 ```
 
-Environment variable:
-
-```bash
-export TELEGRAM_BOT_TOKEN="123456:bot-token"
-```
-
-Windows PowerShell:
-
 ```powershell
 $env:TELEGRAM_BOT_TOKEN="123456:bot-token"
-```
-
-Run:
-
-```bash
 social-posts-analysis run-all --config config/project.local.yaml
 ```
 
-Expected result:
-
-- collects channel posts and discussion messages currently visible in the bot update queue
-- can map discussion replies to channel posts by thread id when those updates are present
-- does not backfill history, so this is useful for forward collection, not for historical archive recovery
-
-### X Web Collection
-
-Use this when you want public scraping from an X profile page. Replies on detail pages are best-effort and improve when an authenticated browser profile is enabled.
-
-Minimal settings:
+### X Web
 
 ```yaml
 source:
@@ -436,35 +302,13 @@ source:
 
 collector:
   mode: "web"
-  meta_api:
-    enabled: false
-  public_web:
-    enabled: false
-  telegram_mtproto:
-    enabled: false
   x_web:
     enabled: true
     authenticated_browser:
       enabled: false
 ```
 
-Run:
-
-```bash
-social-posts-analysis run-all --config config/project.local.yaml
-```
-
-Expected result:
-
-- public profile posts collected from `x.com/<account>`
-- visible replies collected from detail pages when the web UI exposes them
-- without a logged-in browser, reply counters can exceed the number of visible reply articles and the report will show warnings
-
-### X API Collection
-
-Use this when you want one X account per run through the official X API v2.
-
-Minimal settings:
+### X API
 
 ```yaml
 source:
@@ -473,42 +317,80 @@ source:
 
 collector:
   mode: "x_api"
-  meta_api:
-    enabled: false
-  public_web:
-    enabled: false
-  telegram_mtproto:
-    enabled: false
   x_api:
     enabled: true
     bearer_token: null
     search_scope: "recent"
 ```
 
-Environment variable:
-
-```bash
-export X_BEARER_TOKEN="your-bearer-token"
-```
-
-Windows PowerShell:
-
 ```powershell
 $env:X_BEARER_TOKEN="your-bearer-token"
-```
-
-Run:
-
-```bash
 social-posts-analysis run-all --config config/project.local.yaml
 ```
 
-Expected result:
+### Threads API
 
-- source tweets collected from the configured account in the date range
-- replies collected by conversation search and reconstructed into reply trees
-- likes, reposts, replies, quotes, views, and media flags normalized into the generic schema
-- if `search_scope: recent` is used, old replies can be incomplete and the collector will emit an explicit warning
+```yaml
+source:
+  platform: "threads"
+  source_name: "example_account"
+
+collector:
+  mode: "threads_api"
+  threads_api:
+    enabled: true
+    access_token: null
+```
+
+```powershell
+$env:THREADS_ACCESS_TOKEN="your-threads-token"
+social-posts-analysis run-all --config config/project.local.yaml
+```
+
+### Threads Web
+
+```yaml
+source:
+  platform: "threads"
+  source_name: "example_account"
+
+collector:
+  mode: "web"
+  threads_web:
+    enabled: true
+```
+
+### Instagram Graph API
+
+```yaml
+source:
+  platform: "instagram"
+  source_id: "17841400000000000"
+
+collector:
+  mode: "instagram_graph_api"
+  instagram_graph_api:
+    enabled: true
+    access_token: null
+```
+
+```powershell
+$env:INSTAGRAM_ACCESS_TOKEN="your-instagram-token"
+social-posts-analysis run-all --config config/project.local.yaml
+```
+
+### Instagram Web
+
+```yaml
+source:
+  platform: "instagram"
+  source_name: "example_account"
+
+collector:
+  mode: "web"
+  instagram_web:
+    enabled: true
+```
 
 ## Usage
 
@@ -535,8 +417,6 @@ social-posts-analysis report --config config/project.local.yaml --run-id <run_id
 social-posts-analysis export-tables --config config/project.local.yaml --run-id <run_id>
 ```
 
-If you use another config path, replace `config/project.local.yaml` in the commands above.
-
 ## CLI Commands
 
 The package exposes the `social-posts-analysis` CLI with:
@@ -550,14 +430,13 @@ The package exposes the `social-posts-analysis` CLI with:
 - `run-all`
 - `run-many`
 
-`run-many` is most useful for unstable Facebook web collection, because the public DOM can reveal slightly different content across repeated passes.
-X API collection usually does not need `run-many`; `run-all` is the normal path there.
-
 ## Output Tables
 
 Normalized tables:
 
 - `posts.parquet`
+- `propagations.parquet`
+- `propagation_edges.parquet`
 - `comments.parquet`
 - `comment_edges.parquet`
 - `authors.parquet`
@@ -594,7 +473,7 @@ These files or directories should stay local and should not be committed:
 - `reports/`
 - `review/`
 - local browser profile paths
-- Meta tokens, Telegram credentials, and provider keys
+- Meta, Telegram, X, Threads, Instagram, and provider secrets
 - virtual environments and cache directories
 
 ## Testing
@@ -609,13 +488,16 @@ uv run pytest -q
 
 The current test suite covers:
 
-- Facebook Meta API pagination and nested comments
+- Facebook Meta API pagination, nested comments, and visible shares
 - Facebook public-web parsing and timestamp handling
-- Telegram MTProto source resolution, discussion collection, service-message filtering, and reaction parsing
-- normalization and merged snapshots
+- Telegram MTProto source resolution, discussion collection, service-message filtering, and forward detection
+- Telegram web and Bot API mappings
+- X API replies plus quote/repost propagation
+- Threads API and web payload mapping
+- Instagram Graph API and web payload mapping
+- normalization, propagation tables, and merged snapshots
 - analysis helpers and support metrics
 - review override application
-- collection fallback and multi-pass behavior
 
 ## CI
 
@@ -625,19 +507,28 @@ GitHub Actions runs:
 - `mypy src`
 - `pytest -q`
 
-## Important Limits
+## Coverage And Limits
+
+Propagation coverage is asymmetric by design.
+
+- strongest: `x`, `threads`
+- medium: `facebook`
+- partial or limited: `telegram`, `instagram`
+
+Platform-specific limits:
 
 - Facebook public-web collection is best-effort. The DOM can expose different content across runs.
 - Facebook authenticated browser mode still only sees what the logged-in account can see.
-- Telegram v1 supports one channel per run, plus its linked discussion chat when it exists.
-- Telegram web collection works only for public `t.me/s/...` feeds. Public discussion comments are collected only when `source.telegram.discussion_chat_id` points to a visible discussion feed.
-- Telegram Bot API collection only sees updates currently available to the bot. It is not a historical backfill mechanism for old channel posts or comments.
-- Telegram Bot API is now supported as an official update-queue backend, but not as a history backfill backend.
-- X v1 supports one account per run through either the official API or the public web collector, but web coverage is best-effort.
-- X replies are collected through conversation search, so coverage depends on the current X API search access window. With `search_scope: recent`, older replies may be missing.
+- Facebook propagation coverage is limited to shares and visible reshared surfaces the collectors can actually discover.
+- Telegram MTProto and web collection support one source channel per run, plus its linked discussion when visible.
+- Telegram web collection only works for public `t.me/s/...` feeds.
+- Telegram propagation coverage is limited to visible forwards or quoted surfaces available to the current collector.
+- Telegram Bot API only sees updates currently available to the bot. It does not backfill history.
+- X API reply coverage depends on the current search access window. With `search_scope: recent`, older replies can be missing.
 - X web collection can scrape public profile posts, but public reply visibility is often shallower than the reply counter suggests unless an authenticated browser session is used.
-- Some posts may still show a visible comment counter while not yielding full text comments in the DOM.
-- API-first Facebook collection depends on the current Meta permission model and the target object type.
+- Threads API works best for owned-account scenarios. Threads web coverage is best-effort.
+- Instagram Graph API works for owned professional-account scenarios. Instagram web coverage is best-effort and public comments are often shallow.
+- Instagram propagation coverage is intentionally conservative and limited to surfaces that are directly observable.
 - Heuristic fallback providers keep the pipeline usable offline, but proper embeddings and LLM providers produce better analytical quality.
 
 ## License
