@@ -8,6 +8,7 @@ from .facebook_web_content import (
     comment_expansion_patterns,
     comment_sort_menu_patterns,
     comment_sort_option_patterns,
+    reel_comment_entry_patterns,
     reply_expansion_patterns,
 )
 
@@ -22,6 +23,13 @@ def prepare_post_detail_page(
     accept_desktop_cookies(page)
     if target_comment_count <= 0 and not aggressive:
         return
+    if _is_reel_page(page):
+        click_buttonish_text(
+            page,
+            patterns=reel_comment_entry_patterns(),
+            max_clicks=2 if aggressive else 1,
+            wait_ms=1200,
+        )
     click_buttonish_text(
         page,
         patterns=[r"\b\d+(?:\.\d+)?\s*[KM]?\s+comments?\b"],
@@ -97,6 +105,13 @@ def expand_comment_threads(
                 max_clicks=2,
                 wait_ms=1000,
             )
+            if _is_reel_page(page):
+                click_buttonish_text(
+                    page,
+                    patterns=reel_comment_entry_patterns(),
+                    max_clicks=2,
+                    wait_ms=900,
+                )
 
         article_count = count_article_nodes(page)
         if article_count <= last_article_count and not scrolled and more_clicked == 0 and reply_clicked == 0:
@@ -226,3 +241,7 @@ def accept_mobile_cookies(page: Any) -> None:
                 return
         except Exception:
             continue
+
+
+def _is_reel_page(page: Any) -> bool:
+    return "/reel/" in str(getattr(page, "url", "") or "")

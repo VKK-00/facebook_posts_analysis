@@ -40,6 +40,7 @@ from .facebook_web_content import (
     is_ui_line,
     looks_like_mobile_post_header,
     looks_like_name_token,
+    merge_extracted_comments,
     normalize_permalink,
     normalize_post_permalink,
     parse_mobile_timeline_candidates,
@@ -101,6 +102,7 @@ class PublicWebCollector(BaseCollector):
         warnings: list[str] = [
             "Public web extraction is best-effort and may require selector tuning for the target page."
         ]
+        auth_login_wall_warning_added = False
         page_url = self.config.source.url or ""
         if not page_url:
             raise CollectorUnavailableError("Public web collector requires source.url.")
@@ -201,7 +203,7 @@ class PublicWebCollector(BaseCollector):
                     if self.config.date_range.start or self.config.date_range.end:
                         if published_at and not self._within_configured_range(published_at):
                             continue
-                    post = self._collect_post_detail(
+                    post, login_wall_detected = self._collect_post_detail(
                         context=runtime.context,
                         page_id=page_id,
                         page_name=page_name,
@@ -209,6 +211,11 @@ class PublicWebCollector(BaseCollector):
                         published_at=published_at,
                         raw_store=raw_store,
                     )
+                    if login_wall_detected and self._uses_authenticated_browser() and not auth_login_wall_warning_added:
+                        warnings.append(
+                            "Authenticated browser mode is enabled, but Facebook still returned a login wall for at least one detail page. The selected browser profile may not be logged in to Facebook."
+                        )
+                        auth_login_wall_warning_added = True
                     if self.config.date_range.start or self.config.date_range.end:
                         if post.created_at is None:
                             warnings.append(f"Skipped post with unparsed timestamp: {permalink}")
@@ -328,7 +335,7 @@ class PublicWebCollector(BaseCollector):
         candidate: dict[str, Any],
         published_at: str | None,
         raw_store: RawSnapshotStore,
-    ) -> PostSnapshot:
+    ) -> tuple[PostSnapshot, bool]:
         detail_url = self._with_locale(candidate.get("detail_url") or candidate["permalink"])
         target_comment_count = int(candidate.get("comments_count") or 0)
         attempts = [
@@ -361,6 +368,7 @@ class PublicWebCollector(BaseCollector):
 
         payload = best_payload or {}
         detail_html = best_detail_html
+        login_wall_detected = self._payload_looks_login_walled(payload)
 
         published_hint = (
             payload.get("published_hint")
@@ -439,7 +447,7 @@ class PublicWebCollector(BaseCollector):
             raw_path=str(raw_path),
             author=AuthorSnapshot(author_id=page_id, name=page_name),
             comments=comments,
-        )
+        ), login_wall_detected
 
     def _collect_post_payload(
         self,
@@ -639,7 +647,14 @@ class PublicWebCollector(BaseCollector):
 
     @staticmethod
     def _extract_post_page(page: Any, *, comment_limit: int = 200) -> dict[str, Any]:
-        return extract_post_page(page, comment_limit=comment_limit)
+        payload = extract_post_page(page, comment_limit=comment_limit)
+        payload["comments"] = merge_extracted_comments(
+            payload.get("comments", []),
+            payload.get("reel_fallback_comments", []),
+            limit=comment_limit,
+        )
+        payload.pop("reel_fallback_comments", None)
+        return payload
 
     def _collect_mobile_timeline_posts(
         self,
@@ -901,6 +916,23 @@ class PublicWebCollector(BaseCollector):
             if match:
                 return PublicWebCollector._extract_metric_count(match.group(1))
         return 0
+
+    @staticmethod
+    def _payload_looks_login_walled(payload: dict[str, Any]) -> bool:
+        body_text = str(payload.get("body_text") or "")
+        if not body_text:
+            return False
+        normalized = body_text.replace("\xa0", " ")
+        markers = (
+            "Log In",
+            "Forgot password?",
+            "Forgot Account?",
+            "Create new account",
+            "See more on Facebook",
+            "Email or phone number",
+            "Password",
+        )
+        return sum(1 for marker in markers if marker in normalized) >= 2
 
     @staticmethod
     def _is_ui_line(line: str, page_name: str) -> bool:

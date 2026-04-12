@@ -213,6 +213,8 @@ $env:SOCIAL_BROWSER_USER_DATA_DIR="C:\Users\<user>\AppData\Local\Google\Chrome\U
 $env:SOCIAL_BROWSER_PROFILE_DIRECTORY="Default"
 ```
 
+If authenticated browser mode is enabled but Facebook still returns a login wall on detail pages, the collector now emits an explicit warning. In practice that means the selected Chrome/Edge profile launched successfully, but it does not appear to be logged in to Facebook for the target surface.
+
 ### Facebook Meta API
 
 ```yaml

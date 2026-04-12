@@ -139,6 +139,100 @@ def extract_reel_candidates(page: Any) -> list[dict[str, Any]]:
 def extract_post_page(page: Any, *, comment_limit: int = 200) -> dict[str, Any]:
     script = """
     (commentLimit) => {
+      const isVisible = (element) => {
+        if (!element) {
+          return false;
+        }
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== 'none' &&
+          style.visibility !== 'hidden'
+        );
+      };
+      const normalizeText = (value) => (value || '').replace(/\\u00a0/g, ' ').trim();
+      const looksLikeAuthor = (value) => {
+        const normalized = normalizeText(value);
+        return (
+          normalized &&
+          normalized.length <= 80 &&
+          !/\\b(?:comment|reply|replies|like|share)\\b/i.test(normalized) &&
+          !/\\b\\d+\\s*(?:m(?:in)?s?|h|d|w)\\b/i.test(normalized)
+        );
+      };
+      const extractCommentFromArticle = (article) => {
+        const links = Array.from(article.querySelectorAll('a[href], a[role="link"]'));
+        const authorLink = links.find((link) => looksLikeAuthor(link.innerText || '')) || null;
+        const commentPermalink = links.find((link) => (link.href || '').includes('comment_id=')) || null;
+        const rect = article.getBoundingClientRect();
+        return {
+          text: normalizeText(article.innerText || ''),
+          author_name: normalizeText(authorLink?.innerText || '') || null,
+          permalink: commentPermalink?.href || null,
+          published_hint: normalizeText(commentPermalink?.innerText || ''),
+          nesting_x: Math.round(rect.x),
+        };
+      };
+      const findFallbackCommentBlock = (link) => {
+        const candidates = [];
+        let current = link.parentElement;
+        for (let depth = 0; current && depth < 8; depth += 1, current = current.parentElement) {
+          if (!isVisible(current)) {
+            continue;
+          }
+          const text = normalizeText(current.innerText || '');
+          if (!text || text.length < 15 || text.length > 2000) {
+            continue;
+          }
+          const commentLinks = Array.from(current.querySelectorAll('a[href*="comment_id="]')).filter(isVisible).length;
+          const score =
+            (commentLinks === 1 ? 1000 : Math.max(0, 200 - commentLinks * 50)) +
+            Math.max(0, 800 - text.length) -
+            depth * 25;
+          candidates.push({ element: current, score });
+        }
+        candidates.sort((left, right) => right.score - left.score);
+        return candidates[0]?.element || null;
+      };
+      const extractFallbackComments = () => {
+        if (!window.location.href.includes('/reel/')) {
+          return [];
+        }
+        const seen = new Set();
+        const commentLinks = Array.from(document.querySelectorAll('a[href*="comment_id="]'))
+          .filter(isVisible)
+          .filter((link) => {
+            const href = link.href || '';
+            if (!href || seen.has(href)) {
+              return false;
+            }
+            seen.add(href);
+            return true;
+          });
+        return commentLinks
+          .map((link) => {
+            const block = findFallbackCommentBlock(link);
+            if (!block) {
+              return null;
+            }
+            const blockLinks = Array.from(block.querySelectorAll('a[href], a[role="link"]')).filter(isVisible);
+            const authorLink = blockLinks.find((candidate) => looksLikeAuthor(candidate.innerText || '')) || null;
+            const rect = block.getBoundingClientRect();
+            return {
+              dom_key: link.href || null,
+              dom_parent_key: null,
+              text: normalizeText(block.innerText || ''),
+              author_name: normalizeText(authorLink?.innerText || '') || null,
+              permalink: link.href || null,
+              published_hint: normalizeText(link.innerText || ''),
+              nesting_x: Math.round(rect.x),
+            };
+          })
+          .filter((comment) => comment && comment.text && (comment.author_name || comment.permalink || comment.published_hint))
+          .slice(0, commentLimit * 2);
+      };
       const articles = Array.from(document.querySelectorAll('div[role="article"], article'));
       const firstArticle = articles[0] || null;
       const timestampNode = firstArticle?.querySelector('abbr[data-utime], span.timestampContent');
@@ -152,35 +246,15 @@ def extract_post_page(page: Any, *, comment_limit: int = 200) -> dict[str, Any]:
         firstArticle?.querySelector('a[href*="/posts/"]:not([href*="comment_id="]), a[href*="/videos/"], a[href*="/reel/"], a[href*="story_fbid="]') ||
         document.querySelector('a[href*="/posts/"]:not([href*="comment_id="]), a[href*="/videos/"], a[href*="/reel/"], a[href*="story_fbid="]');
       const getMeta = (property) => document.querySelector(`meta[property="${property}"]`)?.content || null;
-      const getComment = (article) => {
-        const links = Array.from(article.querySelectorAll('a[href], a[role="link"]'));
-        const authorLink = links.find((link) => {
-          const value = (link.innerText || '').trim();
-          return (
-            value &&
-            value.length <= 80 &&
-            !/\\b(?:comment|reply|replies|like)\\b/i.test(value) &&
-            !/\\b\\d+\\s*(?:m(?:in)?s?|h|d|w)\\b/i.test(value)
-          );
-        }) || null;
-        const commentPermalink = links.find((link) => (link.href || '').includes('comment_id=')) || null;
-        const rect = article.getBoundingClientRect();
-        return {
-          text: (article.innerText || '').trim(),
-          author_name: authorLink?.innerText?.trim() || null,
-          permalink: commentPermalink?.href || null,
-          published_hint: (commentPermalink?.innerText || '').trim(),
-          nesting_x: Math.round(rect.x),
-        };
-      };
       const comments = articles
         .slice(1)
-        .map(getComment)
+        .map(extractCommentFromArticle)
         .filter((comment) => {
           const text = (comment.text || '').trim();
           return text && (comment.author_name || comment.permalink || comment.published_hint);
         })
         .slice(0, commentLimit);
+      const reelFallbackComments = extractFallbackComments();
       return {
         post_text: firstArticle?.innerText || '',
         post_permalink: statusLinks[0] || permalinkNode?.href || getMeta('og:url') || window.location.href,
@@ -191,6 +265,7 @@ def extract_post_page(page: Any, *, comment_limit: int = 200) -> dict[str, Any]:
         meta_title: getMeta('og:title'),
         meta_description: getMeta('og:description'),
         comments,
+        reel_fallback_comments: reelFallbackComments,
       };
     }
     """

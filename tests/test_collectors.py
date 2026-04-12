@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import social_posts_analysis.collectors.facebook_web_interactions as facebook_web_interactions
+from social_posts_analysis.collectors.facebook_web_content import merge_extracted_comments
 from social_posts_analysis.collectors.instagram_graph_api import InstagramGraphApiCollector
 from social_posts_analysis.collectors.instagram_web import InstagramWebCollector
 from social_posts_analysis.collectors.meta_api import MetaApiCollector
@@ -188,6 +189,76 @@ def test_public_web_comment_article_limit_grows_for_larger_threads() -> None:
     assert PublicWebCollector._comment_article_limit(0, aggressive=False) == 220
     assert PublicWebCollector._comment_article_limit(35, aggressive=True) == 320
     assert PublicWebCollector._comment_article_limit(120, aggressive=True) == 420
+
+
+def test_public_web_merge_extracted_comments_prefers_richer_reel_fallback_payload() -> None:
+    merged = merge_extracted_comments(
+        [
+            {
+                "text": "Comment body",
+                "author_name": None,
+                "permalink": "https://www.facebook.com/reel/1?comment_id=42&locale=en_US",
+                "published_hint": "",
+                "nesting_x": 320,
+            }
+        ],
+        [
+            {
+                "text": "Author Name\\nComment body\\n1h\\n9",
+                "author_name": "Author Name",
+                "permalink": "https://www.facebook.com/reel/1?comment_id=42&__tn__=R",
+                "published_hint": "1h",
+                "nesting_x": 320,
+            },
+            {
+                "text": "Second Author\\nSecond comment\\n2h",
+                "author_name": "Second Author",
+                "permalink": "https://www.facebook.com/reel/1?comment_id=99",
+                "published_hint": "2h",
+                "nesting_x": 320,
+            },
+        ],
+        limit=10,
+    )
+
+    assert len(merged) == 2
+    assert merged[0]["author_name"] == "Author Name"
+    assert merged[0]["published_hint"] == "1h"
+    assert merged[0]["permalink"] == "https://www.facebook.com/reel/1?comment_id=42"
+    assert merged[1]["permalink"] == "https://www.facebook.com/reel/1?comment_id=99"
+
+
+def test_public_web_prepare_post_detail_page_opens_reel_comment_surface(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    class FakePage:
+        url = "https://www.facebook.com/reel/1178401624169743"
+
+    monkeypatch.setattr(facebook_web_interactions, "accept_desktop_cookies", lambda page: None)
+    monkeypatch.setattr(
+        facebook_web_interactions,
+        "click_buttonish_text",
+        lambda page, *, patterns, max_clicks, wait_ms: calls.append(patterns) or 0,
+    )
+    monkeypatch.setattr(facebook_web_interactions, "expand_comment_threads", lambda *args, **kwargs: None)
+
+    facebook_web_interactions.prepare_post_detail_page(
+        FakePage(),
+        target_comment_count=12,
+        aggressive=True,
+    )
+
+    assert any(any("All comments" in pattern or "Comments?" in pattern for pattern in group) for group in calls)
+
+
+def test_public_web_payload_login_wall_detection_requires_multiple_markers() -> None:
+    assert (
+        PublicWebCollector._payload_looks_login_walled(
+            {"body_text": "Log In\nForgot password?\nCreate new account\nSee more on Facebook"}
+        )
+        is True
+    )
+    assert PublicWebCollector._payload_looks_login_walled({"body_text": "Log In"}) is False
 
 
 def test_public_web_expand_comment_threads_respects_zero_time_budget(monkeypatch) -> None:

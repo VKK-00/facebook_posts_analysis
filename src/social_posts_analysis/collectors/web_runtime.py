@@ -38,6 +38,14 @@ class WebCollectorRuntime:
             shutil.rmtree(self.temp_profile_dir, ignore_errors=True)
 
 
+@dataclass(frozen=True, slots=True)
+class AuthenticatedLaunchStrategy:
+    label: str
+    channel: str | None
+    headless: bool
+    use_profile_arg: bool
+
+
 def ensure_playwright_available(error_message: str) -> None:
     try:
         from playwright.sync_api import sync_playwright  # noqa: F401
@@ -68,31 +76,133 @@ def open_web_runtime(
         custom_user_data_error=custom_user_data_error,
         missing_user_data_error_prefix=missing_user_data_error_prefix,
     )
-    profile_directory = authenticated_browser.profile_directory
-    launch_user_data_dir = source_user_data_dir
-    temp_profile_dir: Path | None = None
-    warnings: list[str] = []
-    if authenticated_browser.copy_profile:
-        temp_profile_dir = prepare_temp_profile_directory(
-            source_user_data_dir=source_user_data_dir,
-            profile_directory=profile_directory,
-            temp_root_dir=authenticated_browser.temp_root_dir,
-            prefix=profile_copy_prefix,
-            best_effort=best_effort_profile_copy,
-        )
-        launch_user_data_dir = temp_profile_dir
-        warnings.append(f"Using authenticated browser profile snapshot from {source_user_data_dir} ({profile_directory}).")
-
-    args = [f"--profile-directory={profile_directory}"] if profile_directory else []
-    context = playwright.chromium.launch_persistent_context(
-        user_data_dir=str(launch_user_data_dir),
-        channel=resolve_authenticated_browser_channel(authenticated_browser.browser, browser_channel),
+    return open_authenticated_web_runtime(
+        playwright,
         headless=headless,
-        locale=locale,
+        browser_channel=browser_channel,
         viewport=viewport,
-        args=args,
+        authenticated_browser=authenticated_browser,
+        source_user_data_dir=source_user_data_dir,
+        locale=locale,
+        profile_copy_prefix=profile_copy_prefix,
+        best_effort_profile_copy=best_effort_profile_copy,
     )
-    return WebCollectorRuntime(browser=None, context=context, temp_profile_dir=temp_profile_dir, warnings=warnings)
+
+
+def open_authenticated_web_runtime(
+    playwright: Any,
+    *,
+    headless: bool,
+    browser_channel: str | None,
+    viewport: dict[str, int],
+    authenticated_browser: AuthenticatedBrowserConfig,
+    source_user_data_dir: Path,
+    locale: str,
+    profile_copy_prefix: str,
+    best_effort_profile_copy: bool,
+) -> WebCollectorRuntime:
+    profile_directory = authenticated_browser.profile_directory
+    strategies = authenticated_launch_strategies(
+        headless=headless,
+        channel=resolve_authenticated_browser_channel(authenticated_browser.browser, browser_channel),
+        profile_directory=profile_directory,
+    )
+    failure_messages: list[str] = []
+    snapshot_warning = (
+        f"Using authenticated browser profile snapshot from {source_user_data_dir} ({profile_directory})."
+        if authenticated_browser.copy_profile
+        else None
+    )
+
+    for strategy in strategies:
+        temp_profile_dir: Path | None = None
+        launch_user_data_dir = source_user_data_dir
+        try:
+            if authenticated_browser.copy_profile:
+                temp_profile_dir = prepare_temp_profile_directory(
+                    source_user_data_dir=source_user_data_dir,
+                    profile_directory=profile_directory,
+                    temp_root_dir=authenticated_browser.temp_root_dir,
+                    prefix=profile_copy_prefix,
+                    best_effort=best_effort_profile_copy,
+                )
+                launch_user_data_dir = temp_profile_dir
+
+            args = [f"--profile-directory={profile_directory}"] if profile_directory and strategy.use_profile_arg else []
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=str(launch_user_data_dir),
+                channel=strategy.channel,
+                headless=strategy.headless,
+                locale=locale,
+                viewport=viewport,
+                args=args,
+            )
+            warnings: list[str] = []
+            if snapshot_warning:
+                warnings.append(snapshot_warning)
+            if strategy.label != "requested":
+                warnings.append(f"Authenticated browser launch fallback used: {strategy.label}.")
+            return WebCollectorRuntime(browser=None, context=context, temp_profile_dir=temp_profile_dir, warnings=warnings)
+        except Exception as exc:
+            if temp_profile_dir is not None:
+                shutil.rmtree(temp_profile_dir, ignore_errors=True)
+            failure_messages.append(f"{strategy.label}: {summarize_launch_exception(exc)}")
+
+    attempts = "; ".join(failure_messages)
+    raise CollectorUnavailableError(
+        f"Failed to launch authenticated browser context after {len(strategies)} attempts. {attempts}"
+    )
+
+
+def authenticated_launch_strategies(
+    *,
+    headless: bool,
+    channel: str | None,
+    profile_directory: str,
+) -> list[AuthenticatedLaunchStrategy]:
+    strategies = [
+        AuthenticatedLaunchStrategy(
+            label="requested",
+            channel=channel,
+            headless=headless,
+            use_profile_arg=bool(profile_directory),
+        )
+    ]
+    if profile_directory:
+        strategies.append(
+            AuthenticatedLaunchStrategy(
+                label="without --profile-directory",
+                channel=channel,
+                headless=headless,
+                use_profile_arg=False,
+            )
+        )
+    if headless:
+        strategies.append(
+            AuthenticatedLaunchStrategy(
+                label="headful retry",
+                channel=channel,
+                headless=False,
+                use_profile_arg=bool(profile_directory),
+            )
+        )
+        if profile_directory:
+            strategies.append(
+                AuthenticatedLaunchStrategy(
+                    label="headful retry without --profile-directory",
+                    channel=channel,
+                    headless=False,
+                    use_profile_arg=False,
+                )
+            )
+    return strategies
+
+
+def summarize_launch_exception(exc: Exception) -> str:
+    message = str(exc).strip().replace("\n", " ")
+    if not message:
+        return exc.__class__.__name__
+    return f"{exc.__class__.__name__}: {message}"
 
 
 def resolve_authenticated_user_data_dir(

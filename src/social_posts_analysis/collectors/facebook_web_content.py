@@ -70,6 +70,61 @@ def comment_article_limit(target_comment_count: int, aggressive: bool) -> int:
     return base_limit
 
 
+def merge_extracted_comments(
+    primary_comments: list[dict[str, Any]],
+    fallback_comments: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    index_by_key: dict[str, int] = {}
+    for comment in [*primary_comments, *fallback_comments]:
+        normalized_comment = dict(comment)
+        permalink = normalize_permalink(str(normalized_comment.get("permalink") or ""))
+        if permalink:
+            normalized_comment["permalink"] = permalink
+        key = _comment_candidate_key(normalized_comment)
+        existing_index = index_by_key.get(key)
+        if existing_index is None:
+            index_by_key[key] = len(merged)
+            merged.append(normalized_comment)
+            continue
+        existing = merged[existing_index]
+        if _comment_candidate_score(normalized_comment) > _comment_candidate_score(existing):
+            merged[existing_index] = {
+                **existing,
+                **normalized_comment,
+                "author_name": normalized_comment.get("author_name") or existing.get("author_name"),
+                "published_hint": normalized_comment.get("published_hint") or existing.get("published_hint"),
+                "permalink": normalized_comment.get("permalink") or existing.get("permalink"),
+                "text": normalized_comment.get("text") or existing.get("text"),
+            }
+    if limit <= 0:
+        return merged
+    return merged[:limit]
+
+
+def _comment_candidate_key(comment: dict[str, Any]) -> str:
+    permalink = normalize_permalink(str(comment.get("permalink") or ""))
+    if permalink:
+        return f"permalink:{permalink}"
+    normalized_text = normalize_mobile_text(str(comment.get("text") or ""))
+    return f"text:{normalized_text[:200]}"
+
+
+def _comment_candidate_score(comment: dict[str, Any]) -> int:
+    score = len(normalize_mobile_text(str(comment.get("text") or "")))
+    if comment.get("author_name"):
+        score += 50
+    if comment.get("published_hint"):
+        score += 25
+    if comment.get("permalink"):
+        score += 25
+    if comment.get("dom_parent_key"):
+        score += 5
+    return score
+
+
 def comment_sort_menu_patterns() -> list[str]:
     return [
         r"\bMost relevant\b",
@@ -92,6 +147,17 @@ def comment_sort_option_patterns(*, aggressive: bool) -> list[str]:
     if aggressive:
         patterns.append(r"\bMost relevant\b")
     return patterns
+
+
+def reel_comment_entry_patterns() -> list[str]:
+    return [
+        r"\bAll comments\b",
+        r"\bComments?\b",
+        r"\u0423\u0441\u0456 \u043a\u043e\u043c\u0435\u043d\u0442\u0430\u0440\u0456\b",
+        r"\u0412\u0441\u0435 \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0438\b",
+        r"\u041a\u043e\u043c\u0435\u043d\u0442\u0430\u0440\u0456\b",
+        r"\u041a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0438\b",
+    ]
 
 
 def comment_expansion_patterns() -> list[str]:
