@@ -3,8 +3,16 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from social_posts_analysis.config import ProjectConfig
-from social_posts_analysis.contracts import CollectionManifest, CommentSnapshot, PostSnapshot, SourceSnapshot
+from social_posts_analysis.contracts import (
+    CollectionManifest,
+    CommentSnapshot,
+    MatchHitSnapshot,
+    ObservedSourceSnapshot,
+    PostSnapshot,
+    SourceSnapshot,
+)
 from social_posts_analysis.paths import ProjectPaths
+from social_posts_analysis.person_monitoring import request_signature_from_manifest
 from social_posts_analysis.utils import read_json
 
 
@@ -48,17 +56,12 @@ def load_manifest(paths: ProjectPaths, run_id: str) -> CollectionManifest:
     return CollectionManifest.model_validate(read_json(manifest_path))
 
 
-def manifest_merge_key(manifest: CollectionManifest) -> tuple[str, str, str, str, str, str, str]:
+def manifest_merge_key(manifest: CollectionManifest) -> tuple[str, str, str]:
     source = manifest.source
-    identity = source.source_id or source.source_url or source.source_name or ""
     return (
         source.platform,
-        identity,
-        source.source_url or "",
-        source.source_name or "",
-        manifest.mode,
-        manifest.requested_date_start or "",
-        manifest.requested_date_end or "",
+        source.source_kind,
+        request_signature_from_manifest(manifest),
     )
 
 
@@ -71,6 +74,8 @@ def merge_manifests(output_run_id: str, manifests: list[CollectionManifest]) -> 
     latest_manifest = manifests[-1]
     source = merge_source_snapshots([manifest.source for manifest in manifests])
     warnings = list(dict.fromkeys(warning for manifest in manifests for warning in manifest.warnings))
+    merged_observed_sources = merge_observed_sources(manifests)
+    merged_match_hits = merge_match_hits(manifests)
     if len(manifests) > 1:
         warnings.append(f"Merged normalized snapshot from {len(manifests)} collection runs.")
 
@@ -91,10 +96,13 @@ def merge_manifests(output_run_id: str, manifests: list[CollectionManifest]) -> 
         mode=latest_manifest.mode,
         status=status,
         fallback_used=any(manifest.fallback_used for manifest in manifests),
+        request_signature=request_signature_from_manifest(latest_manifest),
         warnings=warnings,
         cursors=latest_manifest.cursors,
         source=source,
         posts=posts,
+        observed_sources=merged_observed_sources,
+        match_hits=merged_match_hits,
     )
 
 
@@ -104,6 +112,7 @@ def merge_source_snapshots(sources: list[SourceSnapshot]) -> SourceSnapshot:
     for source in reversed(sources[:-1]):
         merged = merged.model_copy(
             update={
+                "source_kind": merged.source_kind or source.source_kind,
                 "source_name": merged.source_name or source.source_name,
                 "source_url": merged.source_url or source.source_url,
                 "source_type": merged.source_type or source.source_type,
@@ -136,14 +145,21 @@ def merge_post_snapshots(existing: PostSnapshot | None, incoming: PostSnapshot) 
 
     return existing.model_copy(
         update={
+            "source_kind": existing.source_kind or incoming.source_kind,
             "created_at": existing.created_at or incoming.created_at,
             "message": incoming.message if len(incoming.message or "") > len(existing.message or "") else existing.message,
+            "raw_text": incoming.raw_text if len(incoming.raw_text or "") > len(existing.raw_text or "") else existing.raw_text,
             "permalink": existing.permalink or incoming.permalink,
             "origin_post_id": existing.origin_post_id or incoming.origin_post_id,
             "origin_external_id": existing.origin_external_id or incoming.origin_external_id,
             "origin_permalink": existing.origin_permalink or incoming.origin_permalink,
             "propagation_kind": existing.propagation_kind or incoming.propagation_kind,
             "is_propagation": existing.is_propagation or incoming.is_propagation,
+            "container_source_id": existing.container_source_id or incoming.container_source_id,
+            "container_source_name": existing.container_source_name or incoming.container_source_name,
+            "container_source_url": existing.container_source_url or incoming.container_source_url,
+            "container_source_type": existing.container_source_type or incoming.container_source_type,
+            "discovery_kind": existing.discovery_kind or incoming.discovery_kind,
             "reactions": max(existing.reactions, incoming.reactions),
             "shares": max(existing.shares, incoming.shares),
             "comments_count": max(existing.comments_count, incoming.comments_count, len(merged_comments)),
@@ -167,14 +183,21 @@ def merge_comment_snapshots(existing: CommentSnapshot | None, incoming: CommentS
         return incoming.model_copy(deep=True)
     return existing.model_copy(
         update={
+            "source_kind": existing.source_kind or incoming.source_kind,
             "parent_entity_type": existing.parent_entity_type or incoming.parent_entity_type,
             "parent_entity_id": existing.parent_entity_id or incoming.parent_entity_id,
             "parent_comment_id": existing.parent_comment_id or incoming.parent_comment_id,
             "reply_to_message_id": existing.reply_to_message_id or incoming.reply_to_message_id,
             "thread_root_post_id": existing.thread_root_post_id or incoming.thread_root_post_id,
             "origin_post_id": existing.origin_post_id or incoming.origin_post_id,
+            "container_source_id": existing.container_source_id or incoming.container_source_id,
+            "container_source_name": existing.container_source_name or incoming.container_source_name,
+            "container_source_url": existing.container_source_url or incoming.container_source_url,
+            "container_source_type": existing.container_source_type or incoming.container_source_type,
+            "discovery_kind": existing.discovery_kind or incoming.discovery_kind,
             "created_at": existing.created_at or incoming.created_at,
             "message": incoming.message if len(incoming.message or "") > len(existing.message or "") else existing.message,
+            "raw_text": incoming.raw_text if len(incoming.raw_text or "") > len(existing.raw_text or "") else existing.raw_text,
             "permalink": existing.permalink or incoming.permalink,
             "reactions": max(existing.reactions, incoming.reactions),
             "reaction_breakdown_json": existing.reaction_breakdown_json or incoming.reaction_breakdown_json,
@@ -215,3 +238,24 @@ def sort_comments(comments: list[CommentSnapshot]) -> list[CommentSnapshot]:
             comment.comment_id,
         ),
     )
+
+
+def merge_observed_sources(manifests: list[CollectionManifest]) -> list[ObservedSourceSnapshot]:
+    merged: dict[tuple[str, str, str], ObservedSourceSnapshot] = {}
+    for manifest in manifests:
+        for observed_source in manifest.observed_sources:
+            key = (
+                observed_source.container_source_id,
+                observed_source.discovery_kind,
+                observed_source.platform,
+            )
+            merged[key] = observed_source
+    return list(merged.values())
+
+
+def merge_match_hits(manifests: list[CollectionManifest]) -> list[MatchHitSnapshot]:
+    merged: dict[str, MatchHitSnapshot] = {}
+    for manifest in manifests:
+        for match_hit in manifest.match_hits:
+            merged[match_hit.match_id] = match_hit
+    return list(merged.values())

@@ -14,6 +14,8 @@ def build_table_records(manifest: CollectionManifest, source_run_ids: list[str])
     comment_edges: list[dict[str, Any]] = []
     authors: list[dict[str, Any]] = []
     media_refs: list[dict[str, Any]] = []
+    observed_sources: list[dict[str, Any]] = []
+    match_hits: list[dict[str, Any]] = []
 
     if manifest.source.source_id:
         authors.append(
@@ -32,14 +34,21 @@ def build_table_records(manifest: CollectionManifest, source_run_ids: list[str])
                 "post_id": post.post_id,
                 "platform": post.platform,
                 "source_id": post.source_id,
+                "source_kind": post.source_kind or manifest.source.source_kind,
                 "origin_post_id": post.origin_post_id or None,
                 "origin_external_id": post.origin_external_id,
                 "origin_permalink": post.origin_permalink,
                 "propagation_kind": post.propagation_kind,
                 "is_propagation": post.is_propagation,
+                "container_source_id": post.container_source_id or manifest.source.source_id,
+                "container_source_name": post.container_source_name or manifest.source.source_name,
+                "container_source_url": post.container_source_url or manifest.source.source_url,
+                "container_source_type": post.container_source_type or manifest.source.source_type,
+                "discovery_kind": post.discovery_kind,
                 "author_id": post.author.author_id if post.author else None,
                 "created_at": post.created_at,
                 "message": post.message,
+                "raw_text": post.raw_text,
                 "permalink": post.permalink,
                 "reactions": post.reactions,
                 "shares": post.shares,
@@ -93,6 +102,7 @@ def build_table_records(manifest: CollectionManifest, source_run_ids: list[str])
                 {
                     "comment_id": comment.comment_id,
                     "platform": comment.platform,
+                    "source_kind": comment.source_kind or post.source_kind or manifest.source.source_kind,
                     "parent_post_id": comment.parent_post_id,
                     "parent_entity_type": scope.parent_entity_type,
                     "parent_entity_id": scope.parent_entity_id,
@@ -100,9 +110,31 @@ def build_table_records(manifest: CollectionManifest, source_run_ids: list[str])
                     "reply_to_message_id": comment.reply_to_message_id,
                     "thread_root_post_id": comment.thread_root_post_id,
                     "origin_post_id": scope.origin_post_id,
+                    "container_source_id": (
+                        comment.container_source_id
+                        or post.container_source_id
+                        or manifest.source.source_id
+                    ),
+                    "container_source_name": (
+                        comment.container_source_name
+                        or post.container_source_name
+                        or manifest.source.source_name
+                    ),
+                    "container_source_url": (
+                        comment.container_source_url
+                        or post.container_source_url
+                        or manifest.source.source_url
+                    ),
+                    "container_source_type": (
+                        comment.container_source_type
+                        or post.container_source_type
+                        or manifest.source.source_type
+                    ),
+                    "discovery_kind": comment.discovery_kind or post.discovery_kind,
                     "author_id": comment.author.author_id if comment.author else None,
                     "created_at": comment.created_at,
                     "message": comment.message,
+                    "raw_text": comment.raw_text,
                     "depth": comment.depth,
                     "permalink": comment.permalink,
                     "reactions": comment.reactions,
@@ -137,6 +169,37 @@ def build_table_records(manifest: CollectionManifest, source_run_ids: list[str])
                     }
                 )
 
+    for observed_source in manifest.observed_sources:
+        observed_sources.append(
+            {
+                "run_id": manifest.run_id,
+                "platform": observed_source.platform,
+                "container_source_id": observed_source.container_source_id,
+                "container_source_name": observed_source.container_source_name,
+                "container_source_url": observed_source.container_source_url,
+                "container_source_type": observed_source.container_source_type,
+                "discovery_kind": observed_source.discovery_kind,
+                "status": observed_source.status,
+                "warning_count": observed_source.warning_count,
+                "source_collector": observed_source.source_collector,
+                "raw_path": observed_source.raw_path,
+            }
+        )
+
+    for match_hit in manifest.match_hits:
+        match_hits.append(
+            {
+                "match_id": match_hit.match_id,
+                "run_id": manifest.run_id,
+                "item_type": match_hit.item_type,
+                "item_id": match_hit.item_id,
+                "match_kind": match_hit.match_kind,
+                "matched_value": match_hit.matched_value,
+                "platform": match_hit.platform,
+                "container_source_id": match_hit.container_source_id,
+            }
+        )
+
     collection_runs = [
         {
             "run_id": manifest.run_id,
@@ -145,12 +208,14 @@ def build_table_records(manifest: CollectionManifest, source_run_ids: list[str])
             "mode": manifest.mode,
             "status": manifest.status,
             "fallback_used": manifest.fallback_used,
+            "request_signature": manifest.request_signature,
             "warning_count": len(manifest.warnings),
             "warning_messages": manifest.warnings,
             "post_count": len([record for record in posts_records if not record.get("is_propagation")]),
             "propagation_count": len(propagation_records),
             "comment_count": len(comments_records),
             "platform": manifest.source.platform,
+            "source_kind": manifest.source.source_kind,
             "source_id": manifest.source.source_id,
             "source_name": manifest.source.source_name,
             "source_type": manifest.source.source_type,
@@ -170,4 +235,6 @@ def build_table_records(manifest: CollectionManifest, source_run_ids: list[str])
         "authors": authors,
         "media_refs": media_refs,
         "collection_runs": collection_runs,
+        "observed_sources": observed_sources,
+        "match_hits": match_hits,
     }

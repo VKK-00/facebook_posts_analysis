@@ -21,6 +21,7 @@ from social_posts_analysis.config import ProjectConfig
 from social_posts_analysis.contracts import CollectionManifest
 from social_posts_analysis.normalization.merge import load_manifest, manifest_merge_key
 from social_posts_analysis.paths import ProjectPaths
+from social_posts_analysis.person_monitoring import PersonMonitorOrchestrator, build_request_signature
 from social_posts_analysis.raw_store import RawSnapshotStore
 from social_posts_analysis.utils import make_run_id
 
@@ -57,6 +58,14 @@ class CollectionService:
             shutil.rmtree(run_dir)
         raw_store = RawSnapshotStore(run_dir)
 
+        if self.config.source.kind == "person_monitor":
+            manifest = PersonMonitorOrchestrator(
+                self.config,
+                collector_builder=self._build_collectors_for_config,
+            ).collect(resolved_run_id, raw_store)
+            self._write_manifest(run_dir, manifest)
+            return manifest
+
         warnings: list[str] = []
         collectors = self._build_collectors()
         if not collectors:
@@ -69,6 +78,7 @@ class CollectionService:
                     update={
                         "requested_date_start": self.config.date_range.start,
                         "requested_date_end": self.config.date_range.end,
+                        "request_signature": build_request_signature(self.config),
                     }
                 )
                 manifest.warnings = [*warnings, *manifest.warnings]
@@ -83,28 +93,35 @@ class CollectionService:
         raise RuntimeError("All configured collectors failed: " + "; ".join(warnings))
 
     def _build_collectors(self) -> list[BaseCollector]:
-        if self.config.source.platform == "telegram":
-            if self.config.collector.mode == "mtproto":
-                return [TelegramMtprotoCollector(self.config)]
-            if self.config.collector.mode == "bot_api":
-                return [TelegramBotApiCollector(self.config)]
-            return [TelegramWebCollector(self.config)]
-        if self.config.source.platform == "x":
-            if self.config.collector.mode == "x_api":
-                return [XApiCollector(self.config)]
-            return [XWebCollector(self.config)]
-        if self.config.source.platform == "threads":
-            if self.config.collector.mode == "threads_api":
-                return [ThreadsApiCollector(self.config)]
-            return [ThreadsWebCollector(self.config)]
-        if self.config.source.platform == "instagram":
-            if self.config.collector.mode == "instagram_graph_api":
-                return [InstagramGraphApiCollector(self.config)]
-            return [InstagramWebCollector(self.config)]
+        return self._build_collectors_for_config(self.config)
 
-        mode = self.config.collector.mode
+    def _build_collectors_for_config(self, config: ProjectConfig) -> list[BaseCollector]:
+        if config.source.platform == "telegram":
+            if config.collector.mode == "mtproto":
+                return [TelegramMtprotoCollector(config)]
+            if config.collector.mode == "bot_api":
+                if config.source.kind == "person_monitor":
+                    return []
+                return [TelegramBotApiCollector(config)]
+            return [TelegramWebCollector(config)]
+        if config.source.platform == "x":
+            if config.collector.mode == "x_api":
+                return [XApiCollector(config)]
+            return [XWebCollector(config)]
+        if config.source.platform == "threads":
+            if config.collector.mode == "threads_api":
+                return [ThreadsApiCollector(config)]
+            return [ThreadsWebCollector(config)]
+        if config.source.platform == "instagram":
+            if config.collector.mode == "instagram_graph_api":
+                return [InstagramGraphApiCollector(config)]
+            return [InstagramWebCollector(config)]
+
+        mode = config.collector.mode
         collector_classes: list[type[Any]]
-        if mode == "api":
+        if config.source.kind == "person_monitor":
+            collector_classes = [PublicWebCollector] if mode in {"web", "hybrid"} else []
+        elif mode == "api":
             collector_classes = [MetaApiCollector]
         elif mode == "web":
             collector_classes = [PublicWebCollector]
@@ -114,7 +131,7 @@ class CollectionService:
         collectors: list[BaseCollector] = []
         for collector_class in collector_classes:
             try:
-                collectors.append(collector_class(self.config))
+                collectors.append(collector_class(config))
             except CollectorUnavailableError:
                 if mode != "hybrid":
                     raise
@@ -131,17 +148,11 @@ class CollectionService:
             return None
         return load_manifest(self.paths, run_id)
 
-    def _current_request_key(self) -> tuple[str, str, str, str, str, str, str]:
-        source = self.config.source
-        identity = source.source_id or source.url or source.source_name or ""
+    def _current_request_key(self) -> tuple[str, str, str]:
         return (
-            source.platform,
-            identity,
-            source.url or "",
-            source.source_name or "",
-            self.config.collector.mode,
-            self.config.date_range.start or "",
-            self.config.date_range.end or "",
+            self.config.source.platform,
+            self.config.source.kind,
+            build_request_signature(self.config),
         )
 
 

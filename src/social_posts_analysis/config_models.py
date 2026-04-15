@@ -23,13 +23,36 @@ class TelegramSourceConfig(BaseModel):
     discussion_chat_id: str | None = None
 
 
+class WatchlistSourceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str | None = None
+    source_id: str | None = None
+    source_name: str | None = None
+    source_type: str | None = None
+
+
+class SourceSearchConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    include_posts: bool = True
+    include_comments: bool = True
+    max_items_per_query: int = 50
+    queries: list[str] | None = None
+
+
 class SourceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    kind: Literal["feed", "person_monitor"] = "feed"
     platform: Literal["facebook", "telegram", "x", "threads", "instagram"] = "facebook"
     url: str | None = None
     source_id: str | None = None
     source_name: str | None = None
+    aliases: list[str] = Field(default_factory=list)
+    watchlist: list[WatchlistSourceConfig] = Field(default_factory=list)
+    search: SourceSearchConfig = Field(default_factory=SourceSearchConfig)
     telegram: TelegramSourceConfig = Field(default_factory=TelegramSourceConfig)
 
     @model_validator(mode="after")

@@ -4,6 +4,7 @@ Run ID: `{{ run_id }}`
 
 Source snapshot:
 - Platform: `{{ platform }}`
+- Source kind: `{{ source_kind }}`
 - Source: `{{ source_name }}`
 - Source ID: `{{ source_id }}`
 - Source type: `{{ source_type }}`
@@ -13,6 +14,27 @@ Source snapshot:
 - Source runs merged: `{{ source_run_count }}`
 - Embeddings provider: `{{ providers.get("embedding_provider", "n/a") }}`
 - LLM provider: `{{ providers.get("llm_provider", "n/a") }}`
+
+{% if is_person_monitor %}
+## Person Monitor Summary
+- Observed surfaces: `{{ observed_source_count }}`
+- Match hits: `{{ match_hit_count }}`
+- Authored posts on external surfaces: `{{ person_monitor_stats.authored_posts }}`
+- Authored comments on external surfaces: `{{ person_monitor_stats.authored_comments }}`
+- Mentions in posts: `{{ person_monitor_stats.mentioned_posts }}`
+- Mentions in comments: `{{ person_monitor_stats.mentioned_comments }}`
+
+## Top External Sources
+{% if top_external_sources %}
+| External Source | Type | Discovery | Status | Hits | Unique Items |
+| --- | --- | --- | --- | ---: | ---: |
+{% for row in top_external_sources %}
+| `{{ row.container_source_name or row.container_source_id }}` | `{{ row.container_source_type or "n/a" }}` | `{{ row.discovery_kind or "n/a" }}` | `{{ row.status or "n/a" }}` | {{ row.hit_count }} | {{ row.unique_items }} |
+{% endfor %}
+{% else %}
+- No matched external sources were found in this run.
+{% endif %}
+{% endif %}
 
 {% if telegram_summary %}
 Telegram metrics:
@@ -116,6 +138,15 @@ Source runs:
 | --- | --- | --- | --- | --- | ---: |
 {% for row in source_run_trace %}
 | `{{ row.source_run_id }}` | `{{ row.collector or "n/a" }}` | `{{ row.mode or "n/a" }}` | `{{ row.status or "n/a" }}` | `{{ row.fallback_used }}` | {{ row.warning_count }} |
+{% endfor %}
+{% endif %}
+
+{% if is_person_monitor and observed_sources %}
+## Observed Surfaces
+| External Source | Type | Discovery | Status | Warning Count |
+| --- | --- | --- | --- | ---: |
+{% for row in observed_sources %}
+| `{{ row.container_source_name or row.container_source_id }}` | `{{ row.container_source_type or "n/a" }}` | `{{ row.discovery_kind }}` | `{{ row.status }}` | {{ row.warning_count }} |
 {% endfor %}
 {% endif %}
 

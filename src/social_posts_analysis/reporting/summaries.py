@@ -262,3 +262,52 @@ def reaction_breakdown_summary(posts: pl.DataFrame, comments: pl.DataFrame) -> l
         {"reaction": reaction, "count": count}
         for reaction, count in sorted(totals.items(), key=lambda item: item[1], reverse=True)
     ]
+
+
+def person_monitor_breakdown(match_hits: pl.DataFrame) -> dict[str, int]:
+    if match_hits.is_empty():
+        return {
+            "authored_posts": 0,
+            "authored_comments": 0,
+            "mentioned_posts": 0,
+            "mentioned_comments": 0,
+        }
+
+    post_like = {"post", "propagation"}
+    authored_hits = match_hits.filter(pl.col("match_kind") == "authored_by_subject")
+    mention_hits = match_hits.filter(pl.col("match_kind") != "authored_by_subject")
+    return {
+        "authored_posts": authored_hits.filter(pl.col("item_type").is_in(list(post_like))).select("item_id").unique().height,
+        "authored_comments": authored_hits.filter(pl.col("item_type") == "comment").select("item_id").unique().height,
+        "mentioned_posts": mention_hits.filter(pl.col("item_type").is_in(list(post_like))).select("item_id").unique().height,
+        "mentioned_comments": mention_hits.filter(pl.col("item_type") == "comment").select("item_id").unique().height,
+    }
+
+
+def top_external_sources_by_hit_count(match_hits: pl.DataFrame, observed_sources: pl.DataFrame) -> list[dict[str, Any]]:
+    if match_hits.is_empty():
+        return []
+    counts = (
+        match_hits.group_by("container_source_id")
+        .agg(
+            pl.len().alias("hit_count"),
+            pl.col("item_id").n_unique().alias("unique_items"),
+        )
+        .sort("hit_count", descending=True)
+        .head(10)
+    )
+    if observed_sources.is_empty():
+        return counts.to_dicts()
+    joined = counts.join(
+        observed_sources.select(
+            "container_source_id",
+            "container_source_name",
+            "container_source_url",
+            "container_source_type",
+            "discovery_kind",
+            "status",
+        ).unique(subset=["container_source_id"], keep="first"),
+        on="container_source_id",
+        how="left",
+    )
+    return joined.to_dicts()

@@ -17,6 +17,7 @@ from social_posts_analysis.utils import read_json
 from .exports import merge_existing_export, rows_to_frame, sanitize_export_frame, write_tabular_exports
 from .summaries import (
     instagram_summary,
+    person_monitor_breakdown,
     post_overview,
     propagation_comment_overview,
     propagation_overview,
@@ -25,6 +26,7 @@ from .summaries import (
     reply_depth_summary,
     telegram_summary,
     threads_summary,
+    top_external_sources_by_hit_count,
     top_propagated_items,
     x_summary,
 )
@@ -144,20 +146,26 @@ class ReportService:
         return self._write_tabular_exports(resolved_run_id, context["export_tables"])
 
     def _build_context(self, run_id: str) -> dict[str, Any]:
-        posts = self._load_table("posts").filter(pl.col("run_id") == run_id)
-        propagations = self._load_table("propagations").filter(pl.col("run_id") == run_id)
-        comments = self._load_table("comments").filter(pl.col("run_id") == run_id)
+        posts = self._load_run_table("posts", run_id)
+        propagations = self._load_run_table("propagations", run_id)
+        comments = self._load_run_table("comments", run_id)
         origin_posts = filter_origin_posts_frame(posts)
-        languages = self._load_table("detected_languages").filter(pl.col("run_id") == run_id)
-        clusters = self._load_table("narrative_clusters").filter(pl.col("run_id") == run_id)
-        memberships = self._load_table("cluster_memberships").filter(pl.col("run_id") == run_id)
-        stance_labels = self._load_table("stance_labels").filter(pl.col("run_id") == run_id)
-        analysis_runs = self._load_table("analysis_runs").filter(pl.col("run_id") == run_id)
-        collection_runs = self._load_table("collection_runs").filter(pl.col("run_id") == run_id)
+        languages = self._load_run_table("detected_languages", run_id)
+        clusters = self._load_run_table("narrative_clusters", run_id)
+        memberships = self._load_run_table("cluster_memberships", run_id)
+        stance_labels = self._load_run_table("stance_labels", run_id)
+        analysis_runs = self._load_run_table("analysis_runs", run_id)
+        collection_runs = self._load_run_table("collection_runs", run_id)
+        observed_sources = self._load_run_table("observed_sources", run_id)
+        match_hits = self._load_run_table("match_hits", run_id)
 
         clusters, memberships = self._apply_narrative_overrides(clusters, memberships)
         stance_labels = self._apply_stance_overrides(stance_labels)
-        comment_memberships = memberships.filter(pl.col("item_type") == "comment")
+        comment_memberships = (
+            memberships.filter(pl.col("item_type") == "comment")
+            if not memberships.is_empty() and "item_type" in memberships.columns
+            else pl.DataFrame()
+        )
         support_metrics = compute_support_metrics(stance_labels, comment_memberships, comments, run_id)
 
         if memberships.is_empty():
@@ -239,6 +247,8 @@ class ReportService:
         warnings = self._data_quality_warnings(run_id, posts, propagations, comments, analysis_runs, collection_runs)
 
         platform = collection_runs["platform"][0] if collection_runs.height and "platform" in collection_runs.columns else self.config.source.platform
+        source_kind = collection_runs["source_kind"][0] if collection_runs.height and "source_kind" in collection_runs.columns else "feed"
+        is_person_monitor = source_kind == "person_monitor"
         source_name = (
             collection_runs["source_name"][0]
             if collection_runs.height and "source_name" in collection_runs.columns
@@ -277,6 +287,19 @@ class ReportService:
             if not support_metrics.is_empty()
             else []
         )
+        person_monitor_stats = (
+            person_monitor_breakdown(match_hits)
+            if is_person_monitor
+            else {
+                "authored_posts": 0,
+                "authored_comments": 0,
+                "mentioned_posts": 0,
+                "mentioned_comments": 0,
+            }
+        )
+        top_external_sources = top_external_sources_by_hit_count(match_hits, observed_sources) if is_person_monitor else []
+        matched_posts = self._matched_posts_frame(posts, match_hits) if is_person_monitor else pl.DataFrame()
+        matched_comments = self._matched_comments_frame(comments, match_hits) if is_person_monitor else pl.DataFrame()
         export_tables = {
             "per_side_support": self._rows_to_frame(global_support),
             "per_origin_support": self._rows_to_frame(origin_support),
@@ -298,6 +321,10 @@ class ReportService:
             "top_propagated_items": self._rows_to_frame(top_propagated_items),
             "source_run_trace": self._rows_to_frame(source_run_trace),
             "source_warnings": self._rows_to_frame(source_warnings),
+            "observed_sources": observed_sources,
+            "match_hits": match_hits,
+            "matched_posts": matched_posts,
+            "matched_comments": matched_comments,
         }
         telegram_summary = self._telegram_summary(origin_posts, comments, collection_runs) if platform == "telegram" else None
         x_summary = self._x_summary(origin_posts, comments) if platform == "x" else None
@@ -308,12 +335,18 @@ class ReportService:
             "title": f"Narrative analysis report: {source_name}",
             "run_id": run_id,
             "platform": platform,
+            "source_kind": source_kind,
+            "is_person_monitor": is_person_monitor,
             "source_name": source_name,
             "source_id": source_id,
             "source_type": source_type,
             "post_count": origin_posts.height,
             "propagation_count": propagations.height,
             "comment_count": comments.height,
+            "observed_source_count": observed_sources.height,
+            "match_hit_count": match_hits.height,
+            "person_monitor_stats": person_monitor_stats,
+            "top_external_sources": top_external_sources,
             "source_run_ids": source_run_ids or [run_id],
             "source_run_count": source_run_count,
             "providers": analysis_runs.to_dicts()[0] if analysis_runs.height else {},
@@ -337,6 +370,8 @@ class ReportService:
             "source_run_trace": source_run_trace,
             "source_warnings": source_warnings,
             "warnings": warnings,
+            "observed_sources": observed_sources.to_dicts() if not observed_sources.is_empty() else [],
+            "match_hits": match_hits.to_dicts() if not match_hits.is_empty() else [],
             "telegram_summary": telegram_summary,
             "x_summary": x_summary,
             "threads_summary": threads_summary,
@@ -733,12 +768,91 @@ class ReportService:
                 warnings.append("Stance and cluster descriptions were generated with heuristic fallbacks.")
         return list(dict.fromkeys(warnings))
 
+    def _matched_posts_frame(self, posts: pl.DataFrame, match_hits: pl.DataFrame) -> pl.DataFrame:
+        if posts.is_empty() or match_hits.is_empty():
+            return pl.DataFrame()
+        post_like_hits = (
+            match_hits.filter(pl.col("item_type").is_in(["post", "propagation"]))
+            .group_by("item_id")
+            .agg(
+                pl.len().alias("match_count"),
+                pl.col("match_kind").alias("match_kinds"),
+                pl.col("matched_value").alias("matched_values"),
+            )
+        )
+        if post_like_hits.is_empty():
+            return pl.DataFrame()
+        return (
+            posts.join(post_like_hits, left_on="post_id", right_on="item_id", how="inner")
+            .with_columns(
+                pl.when(pl.col("is_propagation"))
+                .then(pl.lit("propagation"))
+                .otherwise(pl.lit("post"))
+                .alias("item_type")
+            )
+            .select(
+                "item_type",
+                "post_id",
+                "container_source_id",
+                "container_source_name",
+                "container_source_url",
+                "discovery_kind",
+                "created_at",
+                "permalink",
+                "match_count",
+                "match_kinds",
+                "matched_values",
+                "message",
+            )
+            .sort("created_at", descending=True)
+        )
+
+    def _matched_comments_frame(self, comments: pl.DataFrame, match_hits: pl.DataFrame) -> pl.DataFrame:
+        if comments.is_empty() or match_hits.is_empty():
+            return pl.DataFrame()
+        comment_hits = (
+            match_hits.filter(pl.col("item_type") == "comment")
+            .group_by("item_id")
+            .agg(
+                pl.len().alias("match_count"),
+                pl.col("match_kind").alias("match_kinds"),
+                pl.col("matched_value").alias("matched_values"),
+            )
+        )
+        if comment_hits.is_empty():
+            return pl.DataFrame()
+        return (
+            comments.join(comment_hits, left_on="comment_id", right_on="item_id", how="inner")
+            .select(
+                "comment_id",
+                "parent_post_id",
+                "container_source_id",
+                "container_source_name",
+                "container_source_url",
+                "discovery_kind",
+                "created_at",
+                "permalink",
+                "match_count",
+                "match_kinds",
+                "matched_values",
+                "message",
+                "depth",
+            )
+            .sort("created_at", descending=True)
+        )
+
     def _reaction_breakdown_summary(self, posts: pl.DataFrame, comments: pl.DataFrame) -> list[dict[str, Any]]:
         return reaction_breakdown_summary(posts, comments)
 
     def _load_table(self, table_name: str) -> pl.DataFrame:
         path = self.paths.processed_root / f"{table_name}.parquet"
         return pl.read_parquet(path) if path.exists() else pl.DataFrame()
+
+    def _load_run_table(self, table_name: str, run_id: str) -> pl.DataFrame:
+        frame = self._load_table(table_name)
+        if frame.is_empty() or "run_id" not in frame.columns:
+            return frame
+        return frame.filter(pl.col("run_id") == run_id)
 
     def _write_tabular_exports(self, run_id: str, export_tables: dict[str, pl.DataFrame]) -> list[Path]:
         return write_tabular_exports(self.paths, run_id, export_tables)

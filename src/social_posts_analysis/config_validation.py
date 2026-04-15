@@ -7,6 +7,21 @@ def validate_source_reference(source: Any) -> None:
     has_reference = any([source.url, source.source_id, source.source_name])
     if not has_reference:
         raise ValueError("At least one of source.url, source.source_id, or source.source_name must be provided.")
+    if source.kind == "person_monitor":
+        if not source.watchlist and not source.search.enabled:
+            raise ValueError("person_monitor source requires source.watchlist or source.search.enabled=true.")
+        if source.source_name and not (source.url or source.source_id) and not source.aliases:
+            raise ValueError(
+                "person_monitor source with only source.source_name requires non-empty source.aliases."
+            )
+        for index, item in enumerate(source.watchlist):
+            if not any([item.url, item.source_id, item.source_name]):
+                raise ValueError(
+                    f"source.watchlist[{index}] requires url, source_id, or source_name."
+                )
+        if source.search.enabled and source.search.max_items_per_query <= 0:
+            raise ValueError("source.search.max_items_per_query must be greater than zero.")
+        return
     if source.platform == "facebook" and not (source.url or source.source_id):
         raise ValueError("Facebook source requires source.url or source.source_id.")
 
@@ -14,6 +29,28 @@ def validate_source_reference(source: Any) -> None:
 def validate_project_config(config: Any) -> None:
     if not config.sides:
         raise ValueError("At least one side must be configured for stance analysis.")
+
+    if config.source.kind == "person_monitor":
+        if config.source.platform == "facebook":
+            if config.collector.mode not in {"web", "hybrid"}:
+                raise ValueError("Facebook person_monitor requires collector.mode='web' or collector.mode='hybrid'.")
+            if not config.collector.public_web.enabled:
+                raise ValueError("Facebook person_monitor requires collector.public_web.enabled=true.")
+            return
+        if config.source.platform == "telegram":
+            if config.collector.mode not in {"mtproto", "web"}:
+                raise ValueError("Telegram person_monitor requires collector.mode='mtproto' or collector.mode='web'.")
+        elif config.source.platform == "x":
+            if config.collector.mode not in {"x_api", "web"}:
+                raise ValueError("X person_monitor requires collector.mode='x_api' or collector.mode='web'.")
+        elif config.source.platform == "threads":
+            if config.collector.mode not in {"threads_api", "web"}:
+                raise ValueError("Threads person_monitor requires collector.mode='threads_api' or collector.mode='web'.")
+        elif config.source.platform == "instagram":
+            if config.collector.mode not in {"instagram_graph_api", "web"}:
+                raise ValueError(
+                    "Instagram person_monitor requires collector.mode='instagram_graph_api' or collector.mode='web'."
+                )
 
     if config.source.platform == "telegram":
         if config.collector.mode not in {"mtproto", "web", "bot_api"}:

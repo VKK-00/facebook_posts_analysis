@@ -124,6 +124,10 @@ def test_report_export_table_schema_stays_stable(project_config, project_paths) 
         "top_propagated_items",
         "source_run_trace",
         "source_warnings",
+        "observed_sources",
+        "match_hits",
+        "matched_posts",
+        "matched_comments",
     }
 
 

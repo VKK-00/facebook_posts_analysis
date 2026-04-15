@@ -407,3 +407,197 @@ Runtime assumptions:
 1. довести data-quality без внешних токенов там, где это возможно локально;
 2. сделать coverage gaps и collector warnings явными в reporting;
 3. после появления credentials — провести live validation для `threads_api` и `instagram_graph_api`.
+
+## Обновление: режим person_monitor
+
+С апреля 2026 года в проекте появился новый режим источника:
+
+- `source.kind = "feed"` — старое поведение, когда проект собирает один конкретный page/channel/account как primary source;
+- `source.kind = "person_monitor"` — новый режим наблюдения за профилем человека на одной выбранной платформе.
+
+### Что делает person_monitor
+
+`person_monitor` решает две задачи сразу:
+
+- ищет упоминания профиля человека в чужих постах и комментариях;
+- собирает собственные посты и комментарии этого человека на чужих внешних поверхностях.
+
+Важно: это всё ещё **одна платформа на один run/config**. Кросс-платформенное объединение пока не встроено в один запуск и должно строиться поверх нескольких run-ов.
+
+### Какие новые файлы и модули добавлены
+
+- [src/social_posts_analysis/person_monitoring.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\person_monitoring.py)
+  Новый orchestration и matching layer для `person_monitor`.
+
+### Какие существующие файлы были расширены
+
+- [src/social_posts_analysis/config_models.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\config_models.py)
+  Добавлены:
+  - `source.kind`
+  - `source.aliases`
+  - `source.watchlist`
+  - `source.search`
+- [src/social_posts_analysis/config_validation.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\config_validation.py)
+  Добавлена отдельная validation-ветка для `person_monitor`, включая проверку discovery path и platform/mode compatibility.
+- [src/social_posts_analysis/contracts.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\contracts.py)
+  Расширены raw contracts:
+  - `source_kind`
+  - `container_source_*`
+  - `discovery_kind`
+  - `raw_text`
+  - `request_signature`
+  - `observed_sources`
+  - `match_hits`
+- [src/social_posts_analysis/pipeline.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\pipeline.py)
+  `CollectionService` теперь умеет запускать отдельную ветку `person_monitor`, но старый `feed` flow не заменён и не удалён.
+- [src/social_posts_analysis/normalization/schemas.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\normalization\schemas.py)
+  Добавлены новые normalized tables:
+  - `observed_sources`
+  - `match_hits`
+  Также в `posts`, `comments`, `propagations`, `collection_runs` добавлены новые provenance-поля.
+- [src/social_posts_analysis/normalization/records.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\normalization\records.py)
+  Raw `CollectionManifest` теперь materialize-ится не только в старые tables, но и в `observed_sources` / `match_hits`.
+- [src/social_posts_analysis/normalization/merge.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\normalization\merge.py)
+  Merge key теперь опирается на `request_signature`, а не только на старую комбинацию `platform/source/date_range`.
+- [src/social_posts_analysis/reporting/service.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\reporting\service.py)
+  Добавлены person-monitor context, matched exports и защита от пустых отсутствующих analysis tables.
+- [src/social_posts_analysis/reporting/summaries.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\reporting\summaries.py)
+  Добавлены агрегаты для authored/mentioned activity и top external sources.
+- [src/social_posts_analysis/templates/report.md.j2](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\templates\report.md.j2)
+  Добавлены секции `Person Monitor Summary`, `Top External Sources`, `Observed Surfaces`.
+
+### Как теперь работает data flow в person_monitor
+
+Поток для `person_monitor` такой:
+
+1. Конфиг описывает **наблюдаемый профиль** через `source.url`, `source.source_id`, `source.source_name`, `source.aliases`.
+2. Конфиг описывает **внешние поверхности** через:
+   - `source.watchlist`
+   - `source.search`
+3. [person_monitoring.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\person_monitoring.py) строит список discovery surfaces.
+4. Для каждой внешней поверхности проект создаёт временный **feed-style sub-config** и запускает обычный platform collector.
+5. Сырые sub-run snapshots пишутся в подпапки под raw run:
+   - `data/raw/<run_id>/person_monitor_surfaces/<surface>/...`
+6. После сбора project не сохраняет все найденные items подряд. Он фильтрует только те items, где есть хотя бы один match:
+   - `authored_by_subject`
+   - `profile_url_mention`
+   - `profile_id_mention`
+   - `handle_mention`
+   - `alias_text_mention`
+7. В итоговый root manifest попадают:
+   - `posts` с уже проставленным `container_source_*`
+   - matched comments
+   - `observed_sources`
+   - `match_hits`
+8. Нормализация materialize-ит это в parquet/DuckDB.
+9. Reporting строит отдельные person-monitor exports и summary sections.
+
+### Почему выбран именно orchestration layer, а не переписывание collectors
+
+Были рассмотрены два пути:
+
+- добавить отдельную логику matching внутрь каждого collector;
+- сделать один общий orchestration layer поверх уже существующих collectors.
+
+Выбран второй путь, потому что:
+
+- он сохраняет старый `feed` режим почти без изменений;
+- не размножает одинаковую matching-логику по `facebook`, `telegram`, `x`, `threads`, `instagram`;
+- позволяет постепенно добавлять search adapters, не переписывая raw collectors снова.
+
+Не выбран путь с переписыванием каждого collector-а под `person_monitor`, потому что это увеличило бы риск platform-specific regressions и усложнило бы поддержку.
+
+### Что сейчас считается supported в person_monitor v1
+
+- `facebook`
+  - supported path: `public_web`
+  - `meta_api` остаётся `feed`-only
+- `telegram`
+  - supported path: `telegram_mtproto`, `telegram_web`
+  - `telegram_bot_api` остаётся `feed`-only
+- `x`
+  - supported path: `x_api`, `x_web`
+- `threads`
+  - supported path: `threads_api`, `threads_web`
+- `instagram`
+  - supported path: `instagram_graph_api`, `instagram_web`
+
+Важное ограничение: search-discovery дизайн добавлен в v1, но default implementation пока честно возвращает `unsupported` warning и продолжает `watchlist` path. Это осознанное промежуточное состояние, а не silent drop.
+
+### Какие новые normalized tables появились
+
+#### observed_sources
+
+Одна строка на внешнюю поверхность или search-query surface, которую orchestrator попытался обработать.
+
+Ключевые поля:
+
+- `run_id`
+- `container_source_id`
+- `container_source_name`
+- `container_source_url`
+- `container_source_type`
+- `discovery_kind`
+- `status`
+- `warning_count`
+
+#### match_hits
+
+Одна строка на одно доказательство совпадения.
+
+Ключевые поля:
+
+- `match_id`
+- `run_id`
+- `item_type`
+- `item_id`
+- `match_kind`
+- `matched_value`
+- `platform`
+- `container_source_id`
+
+### Какие новые export tables появились
+
+- `observed_sources.csv`
+- `match_hits.csv`
+- `matched_posts.csv`
+- `matched_comments.csv`
+
+### Что важно знать про dedupe и provenance
+
+- Один и тот же post/comment, найденный и через `watchlist`, и через `search`, не должен дублироваться в итоговом `posts/comments`.
+- При этом `observed_sources` всё равно сохраняет обе discovery paths.
+- Для самого item сейчас при дедупликации предпочитается `watchlist`, если item пришёл и из `watchlist`, и из `search`.
+- `match_hits` не схлопываются до одного «лучшего» match kind. Если у item одновременно есть `authored_by_subject` и, например, `profile_url_mention`, обе строки сохраняются.
+
+### Новые ограничения и открытые вопросы
+
+- Search adapter infrastructure уже есть в дизайне, но default behavior сейчас warning-only. То есть `search-only` config валиден, но без platform-specific adapter-а может не найти ни одной реальной внешней поверхности.
+- `person_monitor` не делает cross-platform entity resolution между разными run-ами.
+- Для платформ с ограниченным public DOM те же старые ограничения остаются:
+  - `facebook_web` heavy reels
+  - `x_web` shallow reply DOM
+  - `telegram_web` discussion completeness
+  - `threads_web` нестабильный публичный UI
+- Если в будущем появятся реальные search adapters, в этом файле нужно обновить:
+  - supported/unsupported status по платформам;
+  - data flow для `source.search`;
+  - ограничения по smoke validation.
+
+### Что было проверено при внедрении person_monitor
+
+Проверки после внедрения:
+
+```powershell
+.\.runvenv\Scripts\ruff.exe check .
+.\.runvenv\Scripts\python.exe -m mypy src
+.\.runvenv\Scripts\python.exe -m pytest -q
+```
+
+Новые регрессии добавлены в:
+
+- [tests/test_person_monitoring.py](C:\Coding projects\facebook_posts_analysis\tests\test_person_monitoring.py)
+  - config validation
+  - orchestration dedupe
+  - match hit preservation
+  - reporting/export surfaces

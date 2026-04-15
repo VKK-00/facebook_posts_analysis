@@ -5,6 +5,15 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 PlatformName = Literal["facebook", "telegram", "x", "threads", "instagram"]
+SourceKind = Literal["feed", "person_monitor"]
+DiscoveryKind = Literal["watchlist", "search"]
+MatchKind = Literal[
+    "authored_by_subject",
+    "profile_url_mention",
+    "profile_id_mention",
+    "handle_mention",
+    "alias_text_mention",
+]
 CollectorMode = Literal[
     "api",
     "web",
@@ -42,6 +51,7 @@ class CommentSnapshot(BaseModel):
 
     comment_id: str
     platform: PlatformName
+    source_kind: SourceKind = "feed"
     parent_post_id: str
     parent_entity_type: ParentEntityType | None = None
     parent_entity_id: str | None = None
@@ -49,8 +59,14 @@ class CommentSnapshot(BaseModel):
     reply_to_message_id: str | None = None
     thread_root_post_id: str | None = None
     origin_post_id: str | None = None
+    container_source_id: str | None = None
+    container_source_name: str | None = None
+    container_source_url: str | None = None
+    container_source_type: str | None = None
+    discovery_kind: DiscoveryKind | None = None
     created_at: str | None = None
     message: str | None = None
+    raw_text: str | None = None
     permalink: str | None = None
     reactions: int = 0
     reaction_breakdown_json: str | None = None
@@ -66,13 +82,20 @@ class PostSnapshot(BaseModel):
     post_id: str
     platform: PlatformName
     source_id: str
+    source_kind: SourceKind = "feed"
     origin_post_id: str | None = None
     origin_external_id: str | None = None
     origin_permalink: str | None = None
     propagation_kind: str | None = None
     is_propagation: bool = False
+    container_source_id: str | None = None
+    container_source_name: str | None = None
+    container_source_url: str | None = None
+    container_source_type: str | None = None
+    discovery_kind: DiscoveryKind | None = None
     created_at: str | None = None
     message: str | None = None
+    raw_text: str | None = None
     permalink: str | None = None
     reactions: int = 0
     shares: int = 0
@@ -96,12 +119,19 @@ class PropagationSnapshot(BaseModel):
     propagation_id: str
     platform: PlatformName
     source_id: str
+    source_kind: SourceKind = "feed"
     origin_post_id: str | None = None
     origin_external_id: str | None = None
     origin_permalink: str | None = None
     propagation_kind: str
+    container_source_id: str | None = None
+    container_source_name: str | None = None
+    container_source_url: str | None = None
+    container_source_type: str | None = None
+    discovery_kind: DiscoveryKind | None = None
     created_at: str | None = None
     message: str | None = None
+    raw_text: str | None = None
     permalink: str | None = None
     reactions: int = 0
     shares: int = 0
@@ -122,6 +152,7 @@ class SourceSnapshot(BaseModel):
 
     platform: PlatformName
     source_id: str
+    source_kind: SourceKind = "feed"
     source_name: str | None = None
     source_url: str | None = None
     source_type: str | None = None
@@ -136,6 +167,33 @@ class SourceSnapshot(BaseModel):
     raw_path: str | None = None
 
 
+class ObservedSourceSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    container_source_id: str
+    container_source_name: str | None = None
+    container_source_url: str | None = None
+    container_source_type: str | None = None
+    discovery_kind: DiscoveryKind
+    platform: PlatformName
+    status: Literal["success", "partial", "failed", "unsupported"] = "success"
+    warning_count: int = 0
+    source_collector: str | None = None
+    raw_path: str | None = None
+
+
+class MatchHitSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    match_id: str
+    item_type: Literal["post", "comment", "propagation"]
+    item_id: str
+    match_kind: MatchKind
+    matched_value: str
+    platform: PlatformName
+    container_source_id: str | None = None
+
+
 class CollectionManifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -147,10 +205,13 @@ class CollectionManifest(BaseModel):
     mode: CollectorMode
     status: Literal["success", "partial", "failed"] = "success"
     fallback_used: bool = False
+    request_signature: str | None = None
     warnings: list[str] = Field(default_factory=list)
     cursors: dict[str, str] = Field(default_factory=dict)
     source: SourceSnapshot
     posts: list[PostSnapshot] = Field(default_factory=list)
+    observed_sources: list[ObservedSourceSnapshot] = Field(default_factory=list)
+    match_hits: list[MatchHitSnapshot] = Field(default_factory=list)
 
 
 class ClusterSummary(BaseModel):
