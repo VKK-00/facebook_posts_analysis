@@ -201,6 +201,7 @@ class ThreadsWebCollector(BaseCollector):
                 thread_root_post_id=post.post_id,
                 created_at=item.get("created_at"),
                 message=item.get("text"),
+                raw_text=item.get("raw_text"),
                 permalink=item.get("permalink"),
                 reactions=parse_compact_number(item.get("like_count")),
                 source_collector=self.name,
@@ -381,7 +382,7 @@ class ThreadsWebCollector(BaseCollector):
         }
 
     def _extract_detail_payload(self, page: Any) -> dict[str, Any]:
-        return page.evaluate(
+        payload = page.evaluate(
             """
             () => {
               const articles = Array.from(document.querySelectorAll('article'));
@@ -406,18 +407,64 @@ class ThreadsWebCollector(BaseCollector):
                   reply_to_status_id: replyToStatusId,
                   created_at: timeNode?.getAttribute('datetime') || null,
                   text: textNode ? textNode.innerText.trim() : '',
+                  raw_text: allText.trim(),
                   author_name: authorUsername,
                   author_username: authorUsername,
                   like_count: metricFromText('like'),
                 };
               }).filter((item) => item.status_id);
+              const pressableRows = Array.from(document.querySelectorAll('[data-pressable-container="true"]')).map((node) => {
+                const authorLink = Array.from(node.querySelectorAll('a[href^="/@"]')).find((anchor) => {
+                  const href = anchor.getAttribute('href') || '';
+                  return /^\\/@[^/]+$/.test(href);
+                });
+                const postLinks = Array.from(new Set(Array.from(node.querySelectorAll('a[href*="/post/"]'))
+                  .map((anchor) => anchor.href || '')
+                  .filter((href) => href && !href.includes('/media'))));
+                const permalink = postLinks[0] || '';
+                if (!authorLink || !permalink) {
+                  return null;
+                }
+                const statusId = permalink ? permalink.split('/post/')[1].split(/[/?#]/)[0] : '';
+                if (!statusId) {
+                  return null;
+                }
+                const repliedToPermalink = postLinks.find((href) => href !== permalink) || '';
+                const replyToStatusId = repliedToPermalink ? repliedToPermalink.split('/post/')[1].split(/[/?#]/)[0] : '';
+                const authorHref = authorLink.getAttribute('href') || '';
+                const authorUsername = authorHref.split('@')[1]?.split(/[/?#]/)[0] || '';
+                const timeNode = node.querySelector('time');
+                return {
+                  permalink,
+                  status_id: statusId,
+                  reply_to_status_id: replyToStatusId,
+                  created_at: timeNode?.getAttribute('datetime') || null,
+                  text: '',
+                  raw_text: (node.innerText || '').trim(),
+                  author_name: (authorLink.innerText || '').trim() || authorUsername,
+                  author_username: authorUsername,
+                  like_count: '',
+                };
+              }).filter((item) => item && item.status_id);
               return {
                 main_status_id: rows.length ? rows[0].status_id : '',
-                replies: rows.length ? rows.slice(1) : [],
+                rows,
+                pressable_rows: pressableRows,
               };
             }
             """
         )
+        merged_rows = self._merge_detail_rows(
+            payload.get("rows") or [],
+            payload.get("pressable_rows") or [],
+        )
+        main_status_id = str(payload.get("main_status_id") or (merged_rows[0]["status_id"] if merged_rows else ""))
+        normalized_rows = self._attach_detail_reply_targets(merged_rows, main_status_id=main_status_id)
+        replies = normalized_rows[1:] if normalized_rows else []
+        return {
+            "main_status_id": main_status_id,
+            "replies": replies,
+        }
 
     @classmethod
     def _merge_profile_post_candidates(
@@ -440,6 +487,80 @@ class ThreadsWebCollector(BaseCollector):
             if existing is None or cls._profile_post_score(normalized) > cls._profile_post_score(existing):
                 merged[status_id] = normalized
         return list(merged.values())
+
+    @classmethod
+    def _merge_detail_rows(
+        cls,
+        primary_rows: list[dict[str, Any]],
+        fallback_rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        for candidate in primary_rows:
+            status_id = str(candidate.get("status_id") or "").strip()
+            if not status_id:
+                continue
+            merged[status_id] = candidate
+            order.append(status_id)
+        for candidate in fallback_rows:
+            normalized = cls._normalize_detail_fallback_candidate(candidate)
+            status_id = str(normalized.get("status_id") or "").strip()
+            if not status_id:
+                continue
+            existing = merged.get(status_id)
+            if existing is None:
+                merged[status_id] = normalized
+                order.append(status_id)
+                continue
+            if cls._detail_row_score(normalized) > cls._detail_row_score(existing):
+                merged[status_id] = normalized
+        return [merged[status_id] for status_id in order if status_id in merged]
+
+    @classmethod
+    def _normalize_detail_fallback_candidate(cls, candidate: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(candidate)
+        raw_text = candidate.get("raw_text")
+        normalized["text"] = cls._extract_visible_post_text(
+            raw_text,
+            author_username=str(candidate.get("author_username") or ""),
+            author_name=str(candidate.get("author_name") or ""),
+        )
+        normalized["like_count"] = candidate.get("like_count") or cls._extract_last_metric_value(raw_text)
+        return normalized
+
+    @staticmethod
+    def _detail_row_score(item: dict[str, Any]) -> int:
+        score = 0
+        if item.get("text"):
+            score += 4
+        if item.get("created_at"):
+            score += 2
+        if item.get("permalink"):
+            score += 2
+        if item.get("reply_to_status_id"):
+            score += 1
+        if item.get("like_count"):
+            score += 1
+        return score
+
+    @classmethod
+    def _attach_detail_reply_targets(
+        cls,
+        rows: list[dict[str, Any]],
+        *,
+        main_status_id: str,
+    ) -> list[dict[str, Any]]:
+        normalized_rows: list[dict[str, Any]] = []
+        for index, candidate in enumerate(rows):
+            normalized = dict(candidate)
+            status_id = str(normalized.get("status_id") or "").strip()
+            reply_to_status_id = str(normalized.get("reply_to_status_id") or "").strip()
+            if index == 0 or status_id == main_status_id:
+                normalized["reply_to_status_id"] = ""
+            elif not reply_to_status_id or reply_to_status_id == status_id:
+                normalized["reply_to_status_id"] = main_status_id
+            normalized_rows.append(normalized)
+        return normalized_rows
 
     @classmethod
     def _normalize_profile_fallback_candidate(cls, candidate: dict[str, Any]) -> dict[str, Any]:
@@ -518,6 +639,18 @@ class ThreadsWebCollector(BaseCollector):
     @staticmethod
     def _is_threads_metric_line(value: str) -> bool:
         return bool(re.fullmatch(r"\d+(?:[.,]\d+)?[KMB]?", value.strip(), flags=re.IGNORECASE))
+
+    @staticmethod
+    def _extract_last_metric_value(raw_text: str | None) -> str:
+        if not raw_text:
+            return ""
+        lines = [line.strip() for line in re.split(r"[\r\n]+", raw_text) if line.strip()]
+        for line in reversed(lines):
+            if re.fullmatch(r"\d+(?:[.,]\d+)?[KMB]?", line, flags=re.IGNORECASE):
+                return line
+            if line and not ThreadsWebCollector._is_threads_metric_summary_line(line):
+                break
+        return ""
 
     @staticmethod
     def _is_threads_metric_summary_line(value: str) -> bool:

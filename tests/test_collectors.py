@@ -2256,6 +2256,156 @@ def test_threads_web_extract_profile_payload_merges_pressable_profile_posts() ->
     ]
 
 
+def test_threads_web_extract_detail_payload_uses_pressable_rows_when_articles_are_missing() -> None:
+    collector = ThreadsWebCollector(_threads_web_config())
+
+    class FakePage:
+        def evaluate(self, script: str) -> dict[str, Any]:
+            assert "pressableRows" in script
+            return {
+                "main_status_id": "",
+                "rows": [],
+                "pressable_rows": [
+                    {
+                        "status_id": "DXGnV_UDC9L",
+                        "reply_to_status_id": "",
+                        "created_at": "2026-04-14T07:16:00Z",
+                        "permalink": "https://www.threads.com/@arianvzn/post/DXGnV_UDC9L",
+                        "text": "",
+                        "raw_text": "arianvzn\n1d\nMain thread body\n122\n12\n5\n41",
+                        "author_name": "arianvzn",
+                        "author_username": "arianvzn",
+                        "like_count": "",
+                    },
+                    {
+                        "status_id": "DXG2amQDONO",
+                        "reply_to_status_id": "",
+                        "created_at": "2026-04-14T09:27:42Z",
+                        "permalink": "https://www.threads.com/@mktpavlenko/post/DXG2amQDONO",
+                        "text": "",
+                        "raw_text": (
+                            "mktpavlenko\n1d\n"
+                            "20k invisible tokens is basically a system prompt that keeps growing every release.\n"
+                            "classic case of the DX team not talking to the billing team\n40"
+                        ),
+                        "author_name": "mktpavlenko",
+                        "author_username": "mktpavlenko",
+                        "like_count": "",
+                    },
+                    {
+                        "status_id": "DXGnp1fiCZk",
+                        "reply_to_status_id": "DXG2amQDONO",
+                        "created_at": "2026-04-14T07:18:42Z",
+                        "permalink": "https://www.threads.com/@dinohensen/post/DXGnp1fiCZk",
+                        "text": "",
+                        "raw_text": "dinohensen\n1d\nStuff like this is why the harness exists\n11\n2",
+                        "author_name": "dinohensen",
+                        "author_username": "dinohensen",
+                        "like_count": "",
+                    },
+                ],
+            }
+
+    payload = collector._extract_detail_payload(FakePage())
+
+    assert payload["main_status_id"] == "DXGnV_UDC9L"
+    assert payload["replies"] == [
+        {
+            "status_id": "DXG2amQDONO",
+            "reply_to_status_id": "DXGnV_UDC9L",
+            "created_at": "2026-04-14T09:27:42Z",
+            "permalink": "https://www.threads.com/@mktpavlenko/post/DXG2amQDONO",
+            "text": (
+                "20k invisible tokens is basically a system prompt that keeps growing every release.\n"
+                "classic case of the DX team not talking to the billing team"
+            ),
+            "raw_text": (
+                "mktpavlenko\n1d\n"
+                "20k invisible tokens is basically a system prompt that keeps growing every release.\n"
+                "classic case of the DX team not talking to the billing team\n40"
+            ),
+            "author_name": "mktpavlenko",
+            "author_username": "mktpavlenko",
+            "like_count": "40",
+        },
+        {
+            "status_id": "DXGnp1fiCZk",
+            "reply_to_status_id": "DXG2amQDONO",
+            "created_at": "2026-04-14T07:18:42Z",
+            "permalink": "https://www.threads.com/@dinohensen/post/DXGnp1fiCZk",
+            "text": "Stuff like this is why the harness exists",
+            "raw_text": "dinohensen\n1d\nStuff like this is why the harness exists\n11\n2",
+            "author_name": "dinohensen",
+            "author_username": "dinohensen",
+            "like_count": "2",
+        },
+    ]
+
+
+def test_threads_web_collect_replies_for_post_preserves_raw_text_and_parent_mapping(tmp_path: Path) -> None:
+    collector = ThreadsWebCollector(_threads_web_config())
+    raw_store = RawSnapshotStore(tmp_path / "raw")
+    post = PostSnapshot(
+        post_id="threads:example_account:200",
+        platform="threads",
+        source_id="example_account",
+        created_at="2026-04-08T10:00:00Z",
+        message="Visible threads post",
+        permalink="https://www.threads.net/@example_account/post/200",
+        source_collector="threads_web",
+    )
+
+    class FakePage:
+        def goto(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class FakeContext:
+        def new_page(self) -> FakePage:
+            return FakePage()
+
+    collector._scroll_timeline = lambda page, passes=None: None  # type: ignore[method-assign]
+    collector._extract_detail_payload = lambda page: {  # type: ignore[method-assign]
+        "main_status_id": "200",
+        "replies": [
+            {
+                "status_id": "201",
+                "reply_to_status_id": "200",
+                "created_at": "2026-04-08T10:05:00Z",
+                "text": "Top reply",
+                "raw_text": "alice\n1d\nTop reply\n9",
+                "permalink": "https://www.threads.net/@alice/post/201",
+                "author_name": "alice",
+                "author_username": "alice",
+                "like_count": "9",
+            },
+            {
+                "status_id": "202",
+                "reply_to_status_id": "201",
+                "created_at": "2026-04-08T10:06:00Z",
+                "text": "Nested reply",
+                "raw_text": "bob\n1d\nNested reply\n2",
+                "permalink": "https://www.threads.net/@bob/post/202",
+                "author_name": "bob",
+                "author_username": "bob",
+                "like_count": "2",
+            },
+        ],
+    }  # type: ignore[method-assign]
+
+    replies = collector._collect_replies_for_post(
+        context=FakeContext(),
+        post=post,
+        raw_store=raw_store,
+    )
+
+    assert [reply.depth for reply in replies] == [0, 1]
+    assert replies[0].raw_text == "alice\n1d\nTop reply\n9"
+    assert replies[1].parent_comment_id == replies[0].comment_id
+
+
 def test_instagram_graph_api_collector_collects_posts_and_nested_comments(tmp_path: Path, monkeypatch) -> None:
     collector = InstagramGraphApiCollector(_instagram_graph_api_config())
 

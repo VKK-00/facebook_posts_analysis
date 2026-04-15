@@ -725,3 +725,44 @@ Runtime assumptions:
 - если Threads снова изменит profile DOM и fallback перестанет видеть post cards;
 - если detail/reply extraction тоже будет переведён на `pressable-container` fallback;
 - если live smoke покажет новый тип DOM-шума в `raw_text`, который нужно вычищать из `message`.
+
+## Обновление: detail/reply extraction в threads_web
+
+Следующим шагом после profile-feed fix был усилен detail-page extractor в [src/social_posts_analysis/collectors/threads_web.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\threads_web.py).
+
+Проблема была похожая:
+
+- на реальных public Threads post pages `article` тоже часто отсутствует;
+- при этом сама страница всё равно содержит main post и видимые replies в `data-pressable-container="true"`;
+- из-за этого `_extract_detail_payload(...)` мог вернуть пустой `replies`, хотя в браузере ответы были видны.
+
+Что изменено:
+
+- `_extract_detail_payload(...)` теперь собирает и старый `article` path, и новый `pressable_rows` fallback;
+- для fallback сохраняются `status_id`, `permalink`, `reply_to_status_id`, `created_at`, `author_name`, `author_username`, `raw_text`, очищенный `text` и `like_count`;
+- `_merge_detail_rows(...)` объединяет article и pressable candidates по `status_id`, чтобы не дублировать один и тот же reply;
+- `_attach_detail_reply_targets(...)` гарантирует, что main post не попадает в `replies`, а replies без явного parent связываются хотя бы с root post;
+- `_collect_replies_for_post(...)` теперь протаскивает `raw_text` в `CommentSnapshot`, чтобы дебаг и downstream review не теряли исходный detail-card текст.
+
+Почему выбран именно такой путь:
+
+- не выбран вариант переписать весь detail extractor только под новый DOM path, потому что старый `article` path всё ещё может давать более точный `reply_to_status_id`, если Threads его отдаёт;
+- не выбран вариант усложнять nested reply inference по нестабильному визуальному DOM, потому что public Threads UI не даёт надёжного и стабильного parent signal для всех ответов.
+
+Фактическая граница поведения после этого:
+
+- если public detail DOM виден, collector теперь чаще получает реальные visible replies даже без `article`;
+- если у reply нет явного parent signal, он привязывается к root post, а не теряется совсем;
+- полноценное восстановление сложной nested reply topology всё ещё остаётся best-effort и ограничено самим public DOM.
+
+Что подтверждено live:
+
+- targeted feed smoke от `2026-04-15` на `https://www.threads.net/@arianvzn` после этого изменения собрал `4` posts и `44` comments/replies, тогда как раньше detail path мог вернуть пустой `replies` при `article=0`;
+- person-monitor smoke на этом же публичном surface больше не ломается на шаге profile -> detail handoff: внешний профиль остаётся найденным и реально отдаёт посты с replies;
+- при этом root `person_monitor` report всё ещё может показывать `0 match_hits`, если найденные external posts и replies не содержат релевантного совпадения с наблюдаемым профилем. Это не регрессия extractor-а, а нормальный результат match layer.
+
+Когда этот раздел нужно обновлять дальше:
+
+- если появится надёжный DOM signal для nested reply parent-child связей;
+- если authenticated browser path начнёт стабильно давать более богатый detail DOM и его придётся описать как отдельный enhancement path;
+- если live smoke покажет, что fallback начал тащить в `message` новый тип UI noise, который текущая очистка не режет.
