@@ -2278,6 +2278,17 @@ def test_threads_web_extract_detail_payload_uses_pressable_rows_when_articles_ar
                         "like_count": "",
                     },
                     {
+                        "status_id": "DXGnp1fiCZk",
+                        "reply_to_status_id": "DXG2amQDONO",
+                        "created_at": "2026-04-14T07:18:42Z",
+                        "permalink": "https://www.threads.com/@dinohensen/post/DXGnp1fiCZk",
+                        "text": "",
+                        "raw_text": "dinohensen\n1d\nStuff like this is why the harness exists\n11\n2",
+                        "author_name": "dinohensen",
+                        "author_username": "dinohensen",
+                        "like_count": "",
+                    },
+                    {
                         "status_id": "DXG2amQDONO",
                         "reply_to_status_id": "",
                         "created_at": "2026-04-14T09:27:42Z",
@@ -2290,17 +2301,6 @@ def test_threads_web_extract_detail_payload_uses_pressable_rows_when_articles_ar
                         ),
                         "author_name": "mktpavlenko",
                         "author_username": "mktpavlenko",
-                        "like_count": "",
-                    },
-                    {
-                        "status_id": "DXGnp1fiCZk",
-                        "reply_to_status_id": "DXG2amQDONO",
-                        "created_at": "2026-04-14T07:18:42Z",
-                        "permalink": "https://www.threads.com/@dinohensen/post/DXGnp1fiCZk",
-                        "text": "",
-                        "raw_text": "dinohensen\n1d\nStuff like this is why the harness exists\n11\n2",
-                        "author_name": "dinohensen",
-                        "author_username": "dinohensen",
                         "like_count": "",
                     },
                 ],
@@ -2340,6 +2340,42 @@ def test_threads_web_extract_detail_payload_uses_pressable_rows_when_articles_ar
             "like_count": "2",
         },
     ]
+
+
+def test_threads_web_order_detail_rows_only_reorders_when_parent_signal_exists() -> None:
+    ordered = ThreadsWebCollector._order_detail_rows(
+        [
+            {
+                "status_id": "DXGnV_UDC9L",
+                "reply_to_status_id": "",
+                "text": "Main post",
+            },
+            {
+                "status_id": "DXGnp1fiCZk",
+                "reply_to_status_id": "DXG2amQDONO",
+                "text": "Nested reply",
+            },
+            {
+                "status_id": "DXG2amQDONO",
+                "reply_to_status_id": "DXGnV_UDC9L",
+                "text": "Top reply",
+            },
+            {
+                "status_id": "DXGorphan123",
+                "reply_to_status_id": "DXGmissing456",
+                "text": "Reply with unknown parent",
+            },
+        ],
+        main_status_id="DXGnV_UDC9L",
+    )
+
+    assert [item["status_id"] for item in ordered] == [
+        "DXGnV_UDC9L",
+        "DXG2amQDONO",
+        "DXGnp1fiCZk",
+        "DXGorphan123",
+    ]
+    assert ordered[3]["reply_to_status_id"] == "DXGmissing456"
 
 
 def test_threads_web_collect_replies_for_post_preserves_raw_text_and_parent_mapping(tmp_path: Path) -> None:

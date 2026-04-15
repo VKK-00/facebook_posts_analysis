@@ -460,7 +460,8 @@ class ThreadsWebCollector(BaseCollector):
         )
         main_status_id = str(payload.get("main_status_id") or (merged_rows[0]["status_id"] if merged_rows else ""))
         normalized_rows = self._attach_detail_reply_targets(merged_rows, main_status_id=main_status_id)
-        replies = normalized_rows[1:] if normalized_rows else []
+        ordered_rows = self._order_detail_rows(normalized_rows, main_status_id=main_status_id)
+        replies = ordered_rows[1:] if ordered_rows else []
         return {
             "main_status_id": main_status_id,
             "replies": replies,
@@ -561,6 +562,51 @@ class ThreadsWebCollector(BaseCollector):
                 normalized["reply_to_status_id"] = main_status_id
             normalized_rows.append(normalized)
         return normalized_rows
+
+    @staticmethod
+    def _order_detail_rows(
+        rows: list[dict[str, Any]],
+        *,
+        main_status_id: str,
+    ) -> list[dict[str, Any]]:
+        by_status_id: dict[str, dict[str, Any]] = {}
+        original_order: list[str] = []
+        for row in rows:
+            status_id = str(row.get("status_id") or "").strip()
+            if not status_id or status_id in by_status_id:
+                continue
+            by_status_id[status_id] = row
+            original_order.append(status_id)
+
+        ordered: list[dict[str, Any]] = []
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(status_id: str) -> None:
+            if status_id in visited:
+                return
+            row = by_status_id.get(status_id)
+            if row is None:
+                return
+            if status_id in visiting:
+                return
+            visiting.add(status_id)
+            reply_to_status_id = str(row.get("reply_to_status_id") or "").strip()
+            if (
+                reply_to_status_id
+                and reply_to_status_id != main_status_id
+                and reply_to_status_id != status_id
+                and reply_to_status_id in by_status_id
+            ):
+                visit(reply_to_status_id)
+            visiting.remove(status_id)
+            if status_id not in visited:
+                ordered.append(row)
+                visited.add(status_id)
+
+        for status_id in original_order:
+            visit(status_id)
+        return ordered
 
     @classmethod
     def _normalize_profile_fallback_candidate(cls, candidate: dict[str, Any]) -> dict[str, Any]:
