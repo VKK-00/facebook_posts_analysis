@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from social_posts_analysis.collectors.x_api import XApiCollector
 from social_posts_analysis.config import ProjectConfig, WatchlistSourceConfig
 from social_posts_analysis.contracts import (
     AuthorSnapshot,
@@ -74,6 +75,57 @@ def test_person_monitor_config_rejects_missing_discovery_path(project_config) ->
 
     with pytest.raises(ValueError, match="person_monitor source requires source.watchlist or source.search.enabled=true"):
         ProjectConfig.model_validate(payload)
+
+
+def test_person_monitor_x_api_search_discovers_external_sources(project_config, monkeypatch) -> None:
+    project_config.source.kind = "person_monitor"
+    project_config.source.platform = "x"
+    project_config.source.source_id = "subject_handle"
+    project_config.source.source_name = "Subject Name"
+    project_config.source.url = "https://x.com/subject_handle"
+    project_config.source.aliases = ["Subject Name"]
+    project_config.source.search.enabled = True
+    project_config.source.search.queries = ["subject_handle"]
+    project_config.collector.mode = "x_api"
+    project_config.collector.x_api.enabled = True
+    project_config.collector.x_api.bearer_token = "token"
+
+    def fake_get_json(self, endpoint, params=None):  # noqa: ANN001, ANN202
+        assert endpoint == "/tweets/search/recent"
+        return {
+            "data": [
+                {
+                    "id": "1",
+                    "text": "Mention @subject_handle",
+                    "author_id": "external_a",
+                    "conversation_id": "1",
+                },
+                {
+                    "id": "2",
+                    "text": "Own post by monitored account",
+                    "author_id": "subject_handle",
+                    "conversation_id": "2",
+                },
+            ],
+            "includes": {
+                "users": [
+                    {"id": "external_a", "username": "external_a", "name": "External A"},
+                    {"id": "subject_handle", "username": "subject_handle", "name": "Subject Name"},
+                ]
+            },
+            "meta": {},
+        }
+
+    monkeypatch.setattr(XApiCollector, "_get_json", fake_get_json)
+    orchestrator = PersonMonitorOrchestrator(project_config, collector_builder=lambda cfg: [])
+
+    discovery_sources, observed_rows, warnings = orchestrator._discover_search_sources()
+
+    assert observed_rows == []
+    assert warnings == []
+    assert [(item.source_id, item.source_name, item.discovery_kind) for item in discovery_sources] == [
+        ("external_a", "External A", "search")
+    ]
 
 
 def test_person_monitor_orchestrator_dedupes_items_and_preserves_match_kinds(project_config, monkeypatch, tmp_path) -> None:
@@ -171,13 +223,79 @@ def test_person_monitor_orchestrator_dedupes_items_and_preserves_match_kinds(pro
     assert manifest.posts[0].container_source_id == "external_a"
     assert manifest.posts[0].discovery_kind == "watchlist"
     assert len(manifest.posts[0].comments) == 1
-    assert len(manifest.observed_sources) == 2
+    assert len(manifest.observed_sources) == 1
     assert {hit.match_kind for hit in manifest.match_hits} >= {
         "alias_text_mention",
         "handle_mention",
         "profile_url_mention",
         "authored_by_subject",
     }
+
+
+def test_person_monitor_orchestrator_dedupes_watchlist_and_search_surfaces(project_config, monkeypatch, tmp_path) -> None:
+    project_config.source.kind = "person_monitor"
+    project_config.source.platform = "x"
+    project_config.source.source_id = "subject_handle"
+    project_config.source.source_name = "Subject Name"
+    project_config.source.url = "https://x.com/subject_handle"
+    project_config.source.aliases = ["Subject Name"]
+    project_config.source.watchlist = [
+        WatchlistSourceConfig(source_id="external_a", source_name="External A", source_type="account")
+    ]
+    project_config.source.search.enabled = True
+    project_config.collector.mode = "web"
+    project_config.collector.x_web.enabled = True
+
+    calls: list[str] = []
+
+    class FakeCollector:
+        name = "fake_x"
+
+        def __init__(self, config) -> None:
+            self.config = config
+
+        def collect(self, run_id, raw_store):  # noqa: ANN001, ANN201
+            calls.append(self.config.source.source_id or "")
+            return CollectionManifest(
+                run_id=run_id,
+                collected_at="2026-04-15T10:00:00+00:00",
+                collector=self.name,
+                mode="web",
+                request_signature=build_request_signature(self.config),
+                source=SourceSnapshot(
+                    platform="x",
+                    source_id="external_a",
+                    source_name="External A",
+                    source_url="https://x.com/external_a",
+                    source_type="account",
+                    source_collector=self.name,
+                ),
+                posts=[],
+            )
+
+    orchestrator = PersonMonitorOrchestrator(project_config, collector_builder=lambda cfg: [FakeCollector(cfg)])
+    monkeypatch.setattr(
+        orchestrator,
+        "_discover_search_sources",
+        lambda: (
+            [
+                DiscoverySource(
+                    source_id="external_a",
+                    source_name="External A",
+                    source_url="https://x.com/external_a",
+                    source_type="account",
+                    discovery_kind="search",
+                )
+            ],
+            [],
+            [],
+        ),
+    )
+
+    manifest = orchestrator.collect("pm-run-dedupe", RawSnapshotStore(tmp_path / "raw"))
+
+    assert calls == ["external_a"]
+    assert len(manifest.observed_sources) == 1
 
 
 def test_person_monitor_report_context_exposes_observed_sources_and_match_exports(

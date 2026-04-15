@@ -174,7 +174,7 @@ class PersonMonitorOrchestrator:
 
         discovery_sources = self._watchlist_sources()
         search_sources, search_rows, search_warnings = self._discover_search_sources()
-        discovery_sources.extend(search_sources)
+        discovery_sources = self._merge_discovery_sources(discovery_sources, search_sources)
         observed_sources.extend(search_rows)
         warnings.extend(search_warnings)
 
@@ -258,6 +258,8 @@ class PersonMonitorOrchestrator:
     def _discover_search_sources(self) -> tuple[list[DiscoverySource], list[ObservedSourceSnapshot], list[str]]:
         if not self.config.source.search.enabled:
             return [], [], []
+        if self.config.source.platform == "x" and self.config.collector.mode == "x_api":
+            return self._discover_x_api_sources()
         warnings: list[str] = []
         observed_rows: list[ObservedSourceSnapshot] = []
         search_warning = (
@@ -279,6 +281,42 @@ class PersonMonitorOrchestrator:
                 )
             )
         return [], observed_rows, warnings
+
+    def _discover_x_api_sources(self) -> tuple[list[DiscoverySource], list[ObservedSourceSnapshot], list[str]]:
+        from social_posts_analysis.collectors.x_api import XApiCollector
+
+        warnings: list[str] = []
+        try:
+            collector = XApiCollector(self.config)
+            payloads = collector.discover_person_monitor_sources(
+                queries=auto_search_queries(self.config.source),
+                include_posts=self.config.source.search.include_posts,
+                include_comments=self.config.source.search.include_comments,
+                max_items_per_query=self.config.source.search.max_items_per_query,
+            )
+        except CollectorUnavailableError as exc:
+            warning = f"X API search discovery is unavailable: {exc}"
+            return [], [], [warning]
+
+        discovery_sources: list[DiscoverySource] = []
+        for payload in payloads:
+            if self._is_monitored_surface(payload):
+                continue
+            source_id = (payload.get("source_id") or "").strip()
+            if not source_id:
+                continue
+            discovery_sources.append(
+                DiscoverySource(
+                    source_id=source_id,
+                    source_name=(payload.get("source_name") or None),
+                    source_url=(payload.get("source_url") or None),
+                    source_type=(payload.get("source_type") or "account"),
+                    discovery_kind="search",
+                )
+            )
+        if not discovery_sources:
+            warnings.append("X API search discovery completed but found no external surfaces for the configured queries.")
+        return discovery_sources, [], warnings
 
     def _collect_surface_manifest(
         self,
@@ -578,6 +616,43 @@ class PersonMonitorOrchestrator:
     @staticmethod
     def _item_identity(item_id: str | None, permalink: str | None) -> str:
         return item_id or permalink or stable_id(permalink or "")
+
+    def _merge_discovery_sources(
+        self,
+        watchlist_sources: list[DiscoverySource],
+        search_sources: list[DiscoverySource],
+    ) -> list[DiscoverySource]:
+        merged: dict[str, DiscoverySource] = {}
+        for discovery_source in [*watchlist_sources, *search_sources]:
+            key = self._surface_identity(discovery_source)
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = discovery_source
+                continue
+            if existing.discovery_kind == "watchlist":
+                continue
+            if discovery_source.discovery_kind == "watchlist":
+                merged[key] = discovery_source
+        return list(merged.values())
+
+    @staticmethod
+    def _surface_identity(discovery_source: DiscoverySource) -> str:
+        return (
+            discovery_source.source_id
+            or normalize_profile_url(discovery_source.source_url)
+            or (discovery_source.source_name or "").casefold()
+        )
+
+    def _is_monitored_surface(self, payload: dict[str, str | None]) -> bool:
+        source_id = (payload.get("source_id") or "").strip()
+        source_url = normalize_profile_url(payload.get("source_url"))
+        source_name = (payload.get("source_name") or "").strip().casefold()
+        monitored_name_candidates = {candidate.casefold() for candidate in self._alias_candidates()}
+        if self.signals.profile_id and source_id and source_id == self.signals.profile_id:
+            return True
+        if self.signals.profile_url and source_url and source_url == normalize_profile_url(self.signals.profile_url):
+            return True
+        return bool(source_name and source_name in monitored_name_candidates)
 
     def _merge_monitor_post(self, existing: PostSnapshot | None, incoming: PostSnapshot) -> PostSnapshot:
         if existing is None:

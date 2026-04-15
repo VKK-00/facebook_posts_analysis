@@ -254,6 +254,86 @@ class XApiCollector(BaseCollector):
                 break
         return pages
 
+    def discover_person_monitor_sources(
+        self,
+        *,
+        queries: list[str],
+        include_posts: bool,
+        include_comments: bool,
+        max_items_per_query: int,
+    ) -> list[dict[str, str | None]]:
+        if not include_posts and not include_comments:
+            return []
+
+        discovered: dict[str, dict[str, str | None]] = {}
+        for query in queries:
+            for payload in self._iter_person_monitor_search_pages(
+                query=query,
+                include_posts=include_posts,
+                include_comments=include_comments,
+                max_items=max_items_per_query,
+            ):
+                includes = self._build_includes(payload.get("includes") or {})
+                for tweet_payload in payload.get("data") or []:
+                    author = self._author_from_payload(tweet_payload, includes["users"])
+                    if author is None or not author.author_id:
+                        continue
+                    discovered[author.author_id] = {
+                        "source_id": author.author_id,
+                        "source_name": author.name,
+                        "source_url": author.profile_url,
+                        "source_type": "account",
+                    }
+        return list(discovered.values())
+
+    def _iter_person_monitor_search_pages(
+        self,
+        *,
+        query: str,
+        include_posts: bool,
+        include_comments: bool,
+        max_items: int,
+    ) -> list[dict[str, Any]]:
+        endpoint = f"/tweets/search/{self.settings.search_scope}"
+        query_parts = [query.strip()]
+        if include_posts and not include_comments:
+            query_parts.append("-is:reply")
+        elif include_comments and not include_posts:
+            query_parts.append("is:reply")
+        params: dict[str, Any] = {
+            "query": " ".join(part for part in query_parts if part),
+            "max_results": min(max(10, max_items), 100),
+            "tweet.fields": self.TWEET_FIELDS,
+            "user.fields": self.USER_FIELDS,
+            "media.fields": self.MEDIA_FIELDS,
+            "expansions": self.EXPANSIONS,
+            "sort_order": "recency",
+        }
+        start_time = self._start_time()
+        end_time = self._end_time()
+        if start_time:
+            params["start_time"] = start_time
+        if end_time:
+            params["end_time"] = end_time
+
+        pages: list[dict[str, Any]] = []
+        next_token: str | None = None
+        remaining = max(1, max_items)
+        while remaining > 0:
+            current_params = {
+                **params,
+                "max_results": min(max(10, remaining), 100),
+                **({"next_token": next_token} if next_token else {}),
+            }
+            payload = self._get_json(endpoint, params=current_params)
+            pages.append(payload)
+            data = payload.get("data") or []
+            remaining -= len(data)
+            next_token = (payload.get("meta") or {}).get("next_token")
+            if not next_token or not data:
+                break
+        return pages
+
     def _build_post_snapshot(
         self,
         *,

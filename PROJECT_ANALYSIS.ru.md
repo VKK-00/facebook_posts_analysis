@@ -524,6 +524,16 @@ Runtime assumptions:
 
 Важное ограничение: search-discovery дизайн добавлен в v1, но default implementation пока честно возвращает `unsupported` warning и продолжает `watchlist` path. Это осознанное промежуточное состояние, а не silent drop.
 
+Исключение из этого правила уже есть:
+
+- для `x` при `collector.mode = "x_api"` добавлен реальный search adapter, который умеет:
+  - выполнять X search по `source.search.queries`
+  - строить discovery surfaces по авторам найденных tweets
+  - исключать сам наблюдаемый профиль из найденных external surfaces
+  - фильтровать `posts` / `comments` через `source.search.include_posts` и `source.search.include_comments`
+
+То есть для `x_api` `source.search` больше не warning-only.
+
 ### Какие новые normalized tables появились
 
 #### observed_sources
@@ -566,13 +576,16 @@ Runtime assumptions:
 ### Что важно знать про dedupe и provenance
 
 - Один и тот же post/comment, найденный и через `watchlist`, и через `search`, не должен дублироваться в итоговом `posts/comments`.
+- Одна и та же внешняя surface, найденная и через `watchlist`, и через `search`, тоже не должна сканироваться дважды.
 - При этом `observed_sources` всё равно сохраняет обе discovery paths.
 - Для самого item сейчас при дедупликации предпочитается `watchlist`, если item пришёл и из `watchlist`, и из `search`.
+- Для самой surface тоже сейчас приоритет у `watchlist`: если один и тот же `container_source` найден и в `watchlist`, и через search adapter, orchestrator сканирует его один раз как `watchlist` source.
 - `match_hits` не схлопываются до одного «лучшего» match kind. Если у item одновременно есть `authored_by_subject` и, например, `profile_url_mention`, обе строки сохраняются.
 
 ### Новые ограничения и открытые вопросы
 
 - Search adapter infrastructure уже есть в дизайне, но default behavior сейчас warning-only. То есть `search-only` config валиден, но без platform-specific adapter-а может не найти ни одной реальной внешней поверхности.
+- Для `x_api` этот пробел частично закрыт: search adapter уже есть, но пока он строит discovery surfaces только по авторам найденных tweets. Это полезно для mentions, но не гарантирует полное покрытие всех authored replies на чужих thread surfaces.
 - `person_monitor` не делает cross-platform entity resolution между разными run-ами.
 - Для платформ с ограниченным public DOM те же старые ограничения остаются:
   - `facebook_web` heavy reels
@@ -601,3 +614,5 @@ Runtime assumptions:
   - orchestration dedupe
   - match hit preservation
   - reporting/export surfaces
+  - `x_api` search discovery
+  - dedupe одной и той же surface между `watchlist` и `search`
