@@ -23,6 +23,9 @@ from social_posts_analysis.contracts import (
 from social_posts_analysis.raw_store import RawSnapshotStore
 from social_posts_analysis.utils import slugify, stable_id, utc_now_iso
 
+THREADS_PROFILE_HOSTS = {"threads.com", "threads.net", "www.threads.com", "www.threads.net"}
+THREADS_CANONICAL_HOST = "threads.net"
+
 
 def build_request_signature(config: ProjectConfig) -> str:
     source = config.source
@@ -809,12 +812,11 @@ class PersonMonitorOrchestrator:
         return tuple(sorted(dict.fromkeys(value.strip() for value in values if value and value.strip())))
 
     def _contains_profile_url(self, blob: str) -> bool:
-        normalized_profile_url = normalize_profile_url(self.signals.profile_url)
-        if not normalized_profile_url:
+        profile_url_candidates = profile_url_match_candidates(self.signals.profile_url)
+        if not profile_url_candidates:
             return False
         normalized_blob = blob.casefold()
-        candidates = {normalized_profile_url, normalized_profile_url.rstrip("/")}
-        return any(candidate and candidate in normalized_blob for candidate in candidates)
+        return any(candidate and candidate in normalized_blob for candidate in profile_url_candidates)
 
     @staticmethod
     def _item_identity(item_id: str | None, permalink: str | None) -> str:
@@ -917,7 +919,27 @@ def normalize_profile_url(value: str | None) -> str:
         return normalized
     parsed = urlparse(normalized)
     path = parsed.path.rstrip("/")
-    return f"{parsed.scheme}://{parsed.netloc}{path}"
+    netloc = parsed.netloc
+    if netloc in THREADS_PROFILE_HOSTS:
+        netloc = THREADS_CANONICAL_HOST
+    return f"{parsed.scheme}://{netloc}{path}"
+
+
+def profile_url_match_candidates(value: str | None) -> set[str]:
+    normalized = normalize_profile_url(value)
+    if not normalized:
+        return set()
+    candidates = {normalized, normalized.rstrip("/")}
+    if "://" not in normalized:
+        return {candidate for candidate in candidates if candidate}
+    parsed = urlparse(normalized)
+    if parsed.netloc == THREADS_CANONICAL_HOST:
+        path = parsed.path.rstrip("/")
+        for host in sorted(THREADS_PROFILE_HOSTS):
+            candidate = f"{parsed.scheme}://{host}{path}"
+            candidates.add(candidate)
+            candidates.add(candidate.rstrip("/"))
+    return {candidate for candidate in candidates if candidate}
 
 
 def _prefer_numeric_max(existing: int | None, incoming: int | None) -> int | None:

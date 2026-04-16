@@ -19,7 +19,12 @@ from social_posts_analysis.contracts import (
     SourceSnapshot,
 )
 from social_posts_analysis.normalize import NormalizationService
-from social_posts_analysis.person_monitoring import DiscoverySource, PersonMonitorOrchestrator, build_request_signature
+from social_posts_analysis.person_monitoring import (
+    DiscoverySource,
+    PersonMonitorOrchestrator,
+    build_request_signature,
+    normalize_profile_url,
+)
 from social_posts_analysis.raw_store import RawSnapshotStore
 from social_posts_analysis.reporting.service import ReportService
 
@@ -471,6 +476,40 @@ def test_person_monitor_orchestrator_dedupes_items_and_preserves_match_kinds(pro
         "profile_url_mention",
         "authored_by_subject",
     }
+
+
+def test_person_monitor_threads_profile_url_aliases_match_threads_com_and_net(project_config) -> None:
+    project_config.source.kind = "person_monitor"
+    project_config.source.platform = "threads"
+    project_config.source.source_id = "openai"
+    project_config.source.source_name = "OpenAI"
+    project_config.source.url = "https://www.threads.net/@openai"
+    project_config.source.aliases = []
+    project_config.collector.mode = "web"
+
+    orchestrator = PersonMonitorOrchestrator(project_config, collector_builder=lambda cfg: [])
+    container_source = SourceSnapshot(
+        platform="threads",
+        source_id="external_threads",
+        source_name="External Threads",
+        source_url="https://www.threads.net/@external_threads",
+        source_collector="threads_web",
+    )
+
+    hits = orchestrator._match_item(
+        item_type="post",
+        item_id="threads:external_threads:1",
+        author=AuthorSnapshot(
+            author_id="different_display_id",
+            name="Different Display",
+            profile_url="https://www.threads.com/@openai",
+        ),
+        text_candidates=["Subject profile link: https://www.threads.com/@openai"],
+        container_source=container_source,
+    )
+
+    assert normalize_profile_url("https://www.threads.com/@OpenAI/") == "https://threads.net/@openai"
+    assert {hit.match_kind for hit in hits} >= {"authored_by_subject", "profile_url_mention"}
 
 
 def test_person_monitor_orchestrator_dedupes_watchlist_and_search_surfaces(project_config, monkeypatch, tmp_path) -> None:

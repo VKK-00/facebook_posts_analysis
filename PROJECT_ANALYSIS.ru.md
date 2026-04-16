@@ -771,3 +771,29 @@ Runtime assumptions:
 - если появится надёжный DOM signal для nested reply parent-child связей;
 - если authenticated browser path начнёт стабильно давать более богатый detail DOM и его придётся описать как отдельный enhancement path;
 - если live smoke покажет, что fallback начал тащить в `message` новый тип UI noise, который текущая очистка не режет.
+
+## Обновление: Threads profile URL matching в person_monitor
+
+После усиления `threads_web` стало видно другой data-quality risk: Threads public web может отдавать ссылки как `threads.com`, а конфиг и часть collector output используют `threads.net`.
+
+Проблема была в match layer:
+
+- [src/social_posts_analysis/person_monitoring.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\person_monitoring.py) сравнивал profile URLs слишком буквально;
+- `https://www.threads.com/@openai` и `https://www.threads.net/@openai` могли считаться разными профилями;
+- из-за этого `profile_url_mention` и `authored_by_subject` могли не появиться в `match_hits`, хотя речь шла об одном Threads профиле.
+
+Что изменено:
+
+- `normalize_profile_url(...)` теперь канонизирует Threads hosts `threads.com`, `threads.net`, `www.threads.com`, `www.threads.net` к одному canonical host `threads.net`;
+- `_contains_profile_url(...)` теперь проверяет набор допустимых URL-вариантов, чтобы raw text или permalink с `threads.com` совпадал с subject profile URL из конфига на `threads.net`;
+- это изменение находится в `person_monitoring.py`, а не в `threads_web.py`, потому что это правило matching/data-quality, а не правило DOM extraction.
+
+Почему не выбран другой путь:
+
+- не выбран вариант переписывать все Threads URLs внутри collector-а, потому что raw payload должен сохранять фактические ссылки, которые отдал public DOM;
+- не выбран fuzzy matching display names, потому что v1 person monitor должен оставаться точным: прямые URL/handle/id/alias signals без approximate name search.
+
+Фактический эффект:
+
+- authored activity и profile URL mentions для Threads теперь устойчивы к `threads.com`/`threads.net` доменному расхождению;
+- для других платформ URL matching сохраняет прежнее поведение.
