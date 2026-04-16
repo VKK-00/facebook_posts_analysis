@@ -763,6 +763,7 @@ Runtime assumptions:
 - targeted feed smoke от `2026-04-15` на `https://www.threads.net/@arianvzn` после этого изменения собрал `4` posts и `44` comments/replies, тогда как раньше detail path мог вернуть пустой `replies` при `article=0`;
 - person-monitor smoke на этом же публичном surface больше не ломается на шаге profile -> detail handoff: внешний профиль остаётся найденным и реально отдаёт посты с replies;
 - в raw detail payload этого smoke-run все `44` visible replies имели `reply_to_status_id == main_status_id`, то есть текущий public DOM на этом surface не дал ни одного подтверждённого non-root parent signal;
+- дополнительная live DOM-проверка `2026-04-16` по `DXGnV_UDC9L`, `DXLKhKqCM-X`, `DXDj7POCJrS`, `DXAFgt4DBSc` подтвердила то же ограничение: `article_count=0`, visible rows есть, но у reply cards только собственный `/post/...` link, `nested_pressables=0`, одинаковые `data-*` keys и `non_root_targets=[]`;
 - при этом root `person_monitor` report всё ещё может показывать `0 match_hits`, если найденные external posts и replies не содержат релевантного совпадения с наблюдаемым профилем. Это не регрессия extractor-а, а нормальный результат match layer.
 
 Когда этот раздел нужно обновлять дальше:
