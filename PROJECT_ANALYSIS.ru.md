@@ -942,3 +942,39 @@ Raw diagnostics по surfaces:
 - последние fallback-и работают как диагностический и extraction path, но public Instagram в этом smoke не отдал данных, на которых они могли бы сработать;
 - это не regression в `person_monitor` discovery: surfaces `nasa` и `natgeo` были найдены и отражены в `observed_sources`;
 - следующий полезный шаг не selector tuning, а authenticated-browser smoke для `collector.instagram_web.authenticated_browser` с явно выбранным logged-in browser profile.
+
+## Live smoke: Instagram web authenticated browser
+
+После public-only smoke был проверен authenticated-browser path для `instagram_web`.
+
+Что изменено перед повторным запуском:
+
+- [src/social_posts_analysis/collectors/instagram_web.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\instagram_web.py) теперь передаёт `best_effort_profile_copy=True` в общий `open_web_runtime(...)`;
+- это сделано по той же причине, что и для Facebook web collector: полный Chrome profile может быть большим или содержать locked/cache файлы, а smoke не должен зависать на копировании несущественных browser cache artifacts;
+- public config schema не менялась.
+
+Фактический smoke:
+
+- первый authenticated attempt с Chrome `Default`, двумя surfaces и обычным copy profile не уложился в `5` минут и был остановлен timeout-ом до raw результата;
+- после best-effort copy был запущен scoped smoke `20260416T112419Z`: Chrome `Default`, `copy_profile=true`, one watchlist surface `nasa`, search disabled;
+- run завершился за примерно `172` секунды;
+- root status: `partial`;
+- observed surfaces: `1`;
+- collected posts: `0`;
+- collected comments: `0`;
+- match hits: `0`;
+- warnings: `4`.
+
+Raw diagnostics:
+
+- runtime подтвердил snapshot: `Using authenticated browser profile snapshot from ... Google\Chrome\User Data (Default)`;
+- `login_wall_detected=true`;
+- `dom_posts=0`, `script_posts=0`, `merged_posts=0`;
+- `serialized_data_detected=false`;
+- body sample снова начинался с `Log In`, `Sign Up`, profile metadata и related accounts.
+
+Вывод:
+
+- authenticated runtime теперь технически запускается и не зависает на полном копировании профиля;
+- текущий Chrome `Default` не снимает Instagram login wall для `nasa`;
+- следующий шаг должен быть не selector tuning, а проверка реально logged-in Instagram browser profile: другой Chrome/Edge profile, `headless=false`, либо ручная подготовка отдельного profile directory, где Instagram точно открыт как logged-in session.

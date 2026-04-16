@@ -794,6 +794,7 @@ class InstagramWebCollector(BaseCollector):
             authenticated_browser=self.settings.authenticated_browser,
             profile_copy_prefix="instagram-web-profile-",
             custom_user_data_error="Instagram authenticated browser mode requires collector.instagram_web.authenticated_browser.user_data_dir.",
+            best_effort_profile_copy=True,
         )
 
     def _uses_authenticated_browser(self) -> bool:

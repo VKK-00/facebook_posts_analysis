@@ -2661,6 +2661,25 @@ def test_instagram_web_profile_payload_warnings_explain_empty_login_wall() -> No
     assert any("no post candidates" in warning for warning in warnings)
 
 
+def test_instagram_web_authenticated_runtime_uses_best_effort_profile_copy(monkeypatch) -> None:
+    config = _instagram_web_config()
+    config.collector.instagram_web.authenticated_browser.enabled = True
+    collector = InstagramWebCollector(config)
+    captured: dict[str, Any] = {}
+
+    def fake_open_web_runtime(playwright: Any, **kwargs: Any) -> SimpleNamespace:
+        captured.update(kwargs)
+        return SimpleNamespace(context=object(), browser=None, temp_profile_dir=None, warnings=[], close=lambda: None)
+
+    monkeypatch.setattr("social_posts_analysis.collectors.instagram_web.open_web_runtime", fake_open_web_runtime)
+
+    collector._open_collection_context(playwright=object())
+
+    assert captured["authenticated_browser"].enabled is True
+    assert captured["profile_copy_prefix"] == "instagram-web-profile-"
+    assert captured["best_effort_profile_copy"] is True
+
+
 def test_instagram_web_post_payload_merges_script_comment_fallback() -> None:
     collector = InstagramWebCollector(_instagram_web_config())
     captured: dict[str, str] = {}
