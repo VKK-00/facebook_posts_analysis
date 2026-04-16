@@ -2588,6 +2588,79 @@ def test_instagram_web_collector_builds_posts_and_comment_snapshots(tmp_path: Pa
     assert comments[1].parent_comment_id == comments[0].comment_id
 
 
+def test_instagram_web_profile_payload_merges_script_fallback_and_diagnostics() -> None:
+    collector = InstagramWebCollector(_instagram_web_config())
+    captured: dict[str, str] = {}
+
+    class FakePage:
+        def evaluate(self, script: str) -> dict[str, Any]:
+            captured["script"] = script
+            return {
+                "source_name": "Example Account",
+                "source_id": "example_account",
+                "source_url": "https://www.instagram.com/example_account/",
+                "page_state": {
+                    "post_link_count": 1,
+                    "script_post_count": 2,
+                    "serialized_data_detected": True,
+                },
+                "posts": [
+                    {
+                        "permalink": "https://www.instagram.com/p/ABC123/?utm_source=ig_web_copy_link",
+                        "status_id": "ABC123",
+                        "text": "",
+                        "raw_text": "",
+                        "author_username": "example_account",
+                    }
+                ],
+                "script_posts": [
+                    {
+                        "permalink": "https://www.instagram.com/p/ABC123/",
+                        "status_id": "ABC123",
+                        "text": "Script caption with @subject_handle",
+                        "raw_text": "Script caption with @subject_handle",
+                        "author_username": "Example_Account",
+                        "created_at": "2026-04-08T10:00:00.000Z",
+                        "comment_count": "3",
+                        "like_count": "9",
+                        "has_media": True,
+                        "media_type": "photo",
+                    },
+                    {
+                        "permalink": "https://www.instagram.com/reel/DEF456/?igsh=1",
+                        "status_id": "DEF456",
+                        "text": "Fallback reel",
+                        "author_username": "example_account",
+                    },
+                ],
+            }
+
+    payload = collector._extract_profile_payload(FakePage())
+
+    assert "collectScriptPosts" in captured["script"]
+    assert "page_state" in captured["script"]
+    assert payload["extraction_sources"] == {"dom_posts": 1, "script_posts": 2, "merged_posts": 2}
+    assert [item["status_id"] for item in payload["posts"]] == ["ABC123", "DEF456"]
+    assert payload["posts"][0]["text"] == "Script caption with @subject_handle"
+    assert payload["posts"][0]["permalink"] == "https://www.instagram.com/p/ABC123/"
+    assert payload["posts"][0]["author_username"] == "example_account"
+    assert payload["posts"][1]["permalink"] == "https://www.instagram.com/reel/DEF456/"
+
+
+def test_instagram_web_profile_payload_warnings_explain_empty_login_wall() -> None:
+    collector = InstagramWebCollector(_instagram_web_config())
+    payload = {
+        "posts": [],
+        "page_state": {"login_wall_detected": True},
+        "extraction_sources": {"dom_posts": 0, "script_posts": 0, "merged_posts": 0},
+    }
+
+    warnings = collector._profile_payload_warnings(payload, source_id="nasa")
+
+    assert any("login/signup UI" in warning for warning in warnings)
+    assert any("no post candidates" in warning for warning in warnings)
+
+
 def test_instagram_web_post_payload_script_uses_strict_comment_candidates() -> None:
     collector = InstagramWebCollector(_instagram_web_config())
     captured: dict[str, str] = {}

@@ -859,3 +859,27 @@ Runtime assumptions:
 - root report и exports были построены, включая `observed_sources.csv` и `match_hits.csv`;
 - public Instagram profile DOM для `nasa` и `natgeo` отдал `posts: []`, поэтому итоговые `posts=0`, `comments=0`, `match_hits=0`;
 - это считается внешним ограничением public Instagram DOM/login-wall surface, а не регрессией discovery path.
+
+## Обновление: Instagram web profile-feed script fallback и diagnostics
+
+После live smoke `20260416T100506Z` стало видно, что `instagram_web` discovery уже находит explicit external profiles, но сам profile-feed extraction может вернуть `posts: []` без достаточного объяснения причины.
+
+Что изменено в [src/social_posts_analysis/collectors/instagram_web.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\instagram_web.py):
+
+- `_extract_profile_payload(...)` оставляет старый DOM-anchor path первым источником post candidates;
+- рядом добавлен fallback `script_posts`, который читает JSON из inline/script application-json блоков и рекурсивно ищет media objects с `shortcode`/`code`, caption, owner username, counts и timestamps;
+- `_merge_profile_post_candidates(...)` дедуплицирует DOM и script candidates по `status_id` и выбирает более богатый вариант, если оба источника нашли один и тот же post;
+- raw `profile_feed.json` теперь содержит `page_state` и `extraction_sources`, чтобы debug видел `dom_posts`, `script_posts`, `merged_posts`, `login_wall_detected`, `profile_unavailable_detected` и короткий `body_text_sample`;
+- `_profile_payload_warnings(...)` добавляет явный warning, если Instagram вернул login/signup UI, unavailable profile surface или ноль post candidates.
+
+Почему выбран именно этот путь:
+
+- не выбран вариант менять public config schema: `authenticated_browser` уже есть в `collector.instagram_web`, поэтому новый код только лучше объясняет, что именно вернул текущий browser context;
+- не выбран fake global search через Instagram UI или внешние поисковики: discovery остаётся explicit-profile only;
+- не выбран вариант считать пустой DOM ошибкой collector-а: Instagram может реально скрыть public feed за login wall, поэтому это фиксируется как coverage warning и raw diagnostic signal.
+
+Фактический эффект:
+
+- если public или authenticated browser DOM содержит сериализованные media данные, collector может собрать posts даже без видимых `<a href="/p/...">` cards;
+- если Instagram снова возвращает пустой profile DOM, report и raw manifest теперь явно показывают, это `dom_posts=0/script_posts=0`, login wall, unavailable page или другой empty-feed сценарий;
+- normalized schema, table names, person-monitor matching rules и fuzzy matching не менялись.

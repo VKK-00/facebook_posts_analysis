@@ -46,8 +46,9 @@ class InstagramWebCollector(BaseCollector):
                 payload = self._extract_profile_payload(page)
                 source_path = raw_store.write_json("instagram_web_source", "profile_feed", payload)
                 source_name = payload.get("source_name") or self.config.source.source_name or self._source_reference()
-                source_id = payload.get("source_id") or self._source_reference()
+                source_id = instagram_username_from_reference(payload.get("source_id")) or self._source_reference()
                 posts = self._build_posts_from_payload(payload, source_id=source_id, source_name=source_name, raw_store=raw_store)
+                warnings.extend(self._profile_payload_warnings(payload, source_id=source_id))
                 updated_posts: list[PostSnapshot] = []
                 for post in posts:
                     comments = self._collect_comments_for_post(context=runtime.context, post=post, raw_store=raw_store)
@@ -72,7 +73,7 @@ class InstagramWebCollector(BaseCollector):
             collector=self.name,
             mode=self.config.collector.mode,
             status="partial" if warnings else "success",
-            warnings=warnings,
+            warnings=list(dict.fromkeys(warnings)),
             source=source_snapshot,
             posts=updated_posts,
         )
@@ -196,7 +197,7 @@ class InstagramWebCollector(BaseCollector):
         return comments
 
     def _extract_profile_payload(self, page: Any) -> dict[str, Any]:
-        return page.evaluate(
+        payload = page.evaluate(
             """
             () => {
               const canonicalPostUrl = (href) => {
@@ -209,6 +210,125 @@ class InstagramWebCollector(BaseCollector):
                 } catch (error) {}
                 return href;
               };
+              const statusIdFromUrl = (href) => {
+                try {
+                  const url = new URL(href, 'https://www.instagram.com');
+                  const parts = url.pathname.split('/').filter(Boolean);
+                  if (parts.length >= 2 && ['p', 'reel'].includes(parts[0])) {
+                    return parts[1];
+                  }
+                } catch (error) {}
+                return '';
+              };
+              const textValue = (value) => {
+                if (value === null || value === undefined) return '';
+                if (typeof value === 'string') return value.trim();
+                return '';
+              };
+              const countValue = (value) => {
+                if (value === null || value === undefined) return '';
+                if (typeof value === 'number') return String(value);
+                if (typeof value === 'string') return value.trim();
+                if (typeof value === 'object' && typeof value.count === 'number') return String(value.count);
+                return '';
+              };
+              const firstText = (...values) => values.map(textValue).find(Boolean) || '';
+              const captionText = (item) => {
+                const edgeCaption = item?.edge_media_to_caption?.edges?.[0]?.node?.text;
+                const caption = item?.caption;
+                return firstText(
+                  edgeCaption,
+                  caption?.text,
+                  caption?.caption,
+                  caption,
+                  item?.accessibility_caption,
+                  item?.title,
+                  item?.text
+                );
+              };
+              const ownerUsername = (item) => firstText(
+                item?.owner?.username,
+                item?.user?.username,
+                item?.profile_grid_owner?.username,
+                item?.author?.username
+              );
+              const timestampValue = (value) => {
+                if (!value) return null;
+                const numeric = Number(value);
+                if (!Number.isFinite(numeric)) return null;
+                const milliseconds = numeric > 100000000000 ? numeric : numeric * 1000;
+                return new Date(milliseconds).toISOString();
+              };
+              const mediaType = (item, permalink) => {
+                const typeValue = String(item?.__typename || item?.media_type || item?.product_type || '').toLowerCase();
+                if (permalink.includes('/reel/') || typeValue.includes('video') || typeValue.includes('clips')) return 'reel';
+                return 'photo';
+              };
+              const candidateFromMedia = (item) => {
+                if (!item || typeof item !== 'object') return null;
+                const shortcode = firstText(item.shortcode, item.code);
+                if (!shortcode || !/^[A-Za-z0-9_-]{3,}$/.test(shortcode)) return null;
+                const hasMediaSignal = Boolean(
+                  item.display_url ||
+                  item.thumbnail_src ||
+                  item.thumbnail_url ||
+                  item.edge_media_to_caption ||
+                  item.caption ||
+                  item.taken_at_timestamp ||
+                  item.owner ||
+                  item.is_video !== undefined ||
+                  item.like_count !== undefined ||
+                  item.comment_count !== undefined
+                );
+                if (!hasMediaSignal) return null;
+                const permalinkKind = item.is_video || String(item.product_type || '').toLowerCase().includes('clips') ? 'reel' : 'p';
+                const permalink = `https://www.instagram.com/${permalinkKind}/${shortcode}/`;
+                return {
+                  permalink,
+                  status_id: shortcode,
+                  created_at: timestampValue(item.taken_at_timestamp || item.taken_at || item.created_time),
+                  text: captionText(item),
+                  raw_text: captionText(item),
+                  author_name: ownerUsername(item),
+                  author_username: ownerUsername(item),
+                  comment_count: countValue(item.edge_media_to_comment) || countValue(item.comment_count),
+                  like_count: countValue(item.edge_liked_by) || countValue(item.edge_media_preview_like) || countValue(item.like_count),
+                  has_media: true,
+                  media_type: mediaType(item, permalink),
+                };
+              };
+              const collectMediaCandidates = (root, output, seenObjects) => {
+                if (!root || typeof root !== 'object' || seenObjects.has(root)) return;
+                seenObjects.add(root);
+                const candidate = candidateFromMedia(root);
+                if (candidate) {
+                  output.push(candidate);
+                }
+                if (Array.isArray(root)) {
+                  for (const item of root) collectMediaCandidates(item, output, seenObjects);
+                  return;
+                }
+                for (const value of Object.values(root)) {
+                  collectMediaCandidates(value, output, seenObjects);
+                }
+              };
+              const collectScriptPosts = () => {
+                const posts = [];
+                for (const script of Array.from(document.querySelectorAll('script[type="application/json"], script:not([src])'))) {
+                  const raw = (script.textContent || '').trim();
+                  if (!raw || (!raw.startsWith('{') && !raw.startsWith('['))) continue;
+                  try {
+                    const parsed = JSON.parse(raw);
+                    collectMediaCandidates(parsed, posts, new Set());
+                  } catch (error) {}
+                }
+                const byStatus = new Map();
+                for (const post of posts) {
+                  if (!post.status_id || byStatus.has(post.status_id)) continue;
+                  byStatus.set(post.status_id, post);
+                }
+                return Array.from(byStatus.values());
+              };
               const links = Array.from(document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'));
               const seen = new Set();
               const posts = links.map((anchor) => {
@@ -219,9 +339,7 @@ class InstagramWebCollector(BaseCollector):
                 const rawText = (anchor.innerText || imageNode?.getAttribute('alt') || '').trim();
                 return {
                   permalink: href,
-                  status_id: href.includes('/reel/')
-                    ? href.split('/reel/')[1].split(/[/?#]/)[0]
-                    : href.split('/p/')[1].split(/[/?#]/)[0],
+                  status_id: statusIdFromUrl(href),
                   created_at: null,
                   text: imageNode?.getAttribute('alt') || '',
                   raw_text: rawText,
@@ -232,16 +350,45 @@ class InstagramWebCollector(BaseCollector):
                   has_media: Boolean(imageNode),
                   media_type: href.includes('/reel/') ? 'reel' : 'photo',
                 };
-              }).filter(Boolean);
+              }).filter((item) => item && item.status_id);
+              const bodyText = (document.body?.innerText || '').trim();
+              const lowerBodyText = bodyText.toLowerCase();
+              const scriptPosts = collectScriptPosts();
               return {
                 source_name: (document.querySelector('header section h2, header section h1')?.textContent || document.title || '').trim(),
                 source_id: location.pathname.replace(/^\\//, '').split('/')[0],
                 source_url: location.href,
+                page_state: {
+                  title: document.title || '',
+                  url: location.href,
+                  post_link_count: links.length,
+                  script_post_count: scriptPosts.length,
+                  body_text_sample: bodyText.slice(0, 500),
+                  login_wall_detected: /log in|sign up|log into instagram|create an account/.test(lowerBodyText),
+                  profile_unavailable_detected: /sorry, this page isn't available|page isn't available|content isn't available/.test(lowerBodyText),
+                  serialized_data_detected: scriptPosts.length > 0,
+                },
                 posts,
+                script_posts: scriptPosts,
               };
             }
             """
         )
+        dom_posts = payload.get("posts") or []
+        script_posts = payload.get("script_posts") or []
+        merged_posts = self._merge_profile_post_candidates(dom_posts, script_posts)
+        return {
+            "source_name": payload.get("source_name"),
+            "source_id": payload.get("source_id"),
+            "source_url": payload.get("source_url"),
+            "page_state": payload.get("page_state") or {},
+            "extraction_sources": {
+                "dom_posts": len(dom_posts),
+                "script_posts": len(script_posts),
+                "merged_posts": len(merged_posts),
+            },
+            "posts": merged_posts,
+        }
 
     def _extract_post_payload(self, page: Any) -> dict[str, Any]:
         return page.evaluate(
@@ -297,6 +444,79 @@ class InstagramWebCollector(BaseCollector):
         if author_username:
             normalized["author_username"] = author_username
         return normalized
+
+    @classmethod
+    def _merge_profile_post_candidates(
+        cls,
+        primary_posts: list[dict[str, Any]],
+        fallback_posts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        for candidate in primary_posts:
+            normalized = cls._normalize_post_payload_item(candidate)
+            status_id = str(normalized.get("status_id") or "").strip()
+            if not status_id:
+                continue
+            merged[status_id] = normalized
+            order.append(status_id)
+        for candidate in fallback_posts:
+            normalized = cls._normalize_post_payload_item(candidate)
+            status_id = str(normalized.get("status_id") or "").strip()
+            if not status_id:
+                continue
+            existing = merged.get(status_id)
+            if existing is None:
+                merged[status_id] = normalized
+                order.append(status_id)
+                continue
+            if cls._profile_post_score(normalized) > cls._profile_post_score(existing):
+                merged[status_id] = normalized
+        return [merged[status_id] for status_id in order if status_id in merged]
+
+    @staticmethod
+    def _profile_post_score(item: dict[str, Any]) -> int:
+        score = 0
+        if item.get("text"):
+            score += 4
+        if item.get("raw_text"):
+            score += 3
+        if item.get("created_at"):
+            score += 2
+        if item.get("permalink"):
+            score += 2
+        if item.get("author_username"):
+            score += 1
+        if item.get("comment_count"):
+            score += 1
+        if item.get("like_count"):
+            score += 1
+        return score
+
+    def _profile_payload_warnings(self, payload: dict[str, Any], *, source_id: str) -> list[str]:
+        warnings: list[str] = []
+        page_state = payload.get("page_state") or {}
+        posts = payload.get("posts") or []
+        if page_state.get("login_wall_detected"):
+            if self._uses_authenticated_browser():
+                warnings.append(
+                    "Authenticated browser mode is enabled, but Instagram still returned login/signup UI for the profile feed. "
+                    "The selected browser profile may not be logged in to Instagram."
+                )
+            else:
+                warnings.append(
+                    "Instagram public web returned login/signup UI for the profile feed; enable authenticated_browser to scan this surface with a logged-in browser profile."
+                )
+        if page_state.get("profile_unavailable_detected"):
+            warnings.append(f"Instagram profile surface for {source_id} appears unavailable or inaccessible in the current web UI.")
+        if not posts:
+            extraction_sources = payload.get("extraction_sources") or {}
+            warnings.append(
+                "Instagram web profile feed exposed no post candidates for "
+                f"{source_id}; extraction counts: dom_posts={extraction_sources.get('dom_posts', 0)}, "
+                f"script_posts={extraction_sources.get('script_posts', 0)}."
+            )
+        return warnings
 
     @classmethod
     def _normalize_comment_payload_item(cls, item: dict[str, Any], *, index: int) -> dict[str, Any] | None:
@@ -361,6 +581,9 @@ class InstagramWebCollector(BaseCollector):
             profile_copy_prefix="instagram-web-profile-",
             custom_user_data_error="Instagram authenticated browser mode requires collector.instagram_web.authenticated_browser.user_data_dir.",
         )
+
+    def _uses_authenticated_browser(self) -> bool:
+        return self.settings.authenticated_browser.enabled
 
     def _scroll_timeline(self, page: Any, *, passes: int | None = None) -> None:
         scroll_page(
