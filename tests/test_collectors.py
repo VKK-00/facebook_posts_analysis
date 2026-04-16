@@ -2515,6 +2515,7 @@ def test_instagram_web_collector_builds_posts_and_comment_snapshots(tmp_path: Pa
                     "status_id": "abc123",
                     "created_at": "2026-04-08T10:00:00Z",
                     "text": "Visible Instagram post",
+                    "raw_text": "Visible Instagram post\n@subject_handle",
                     "permalink": "https://www.instagram.com/p/abc123/",
                     "author_name": "Example Account",
                     "author_username": "example_account",
@@ -2548,6 +2549,7 @@ def test_instagram_web_collector_builds_posts_and_comment_snapshots(tmp_path: Pa
                 "comment_id": "c1",
                 "created_at": "2026-04-08T10:05:00Z",
                 "text": "Top level",
+                "raw_text": "Alice\nTop level\n@subject_handle",
                 "author_name": "Alice",
                 "author_username": "alice",
                 "like_count": "2",
@@ -2557,6 +2559,7 @@ def test_instagram_web_collector_builds_posts_and_comment_snapshots(tmp_path: Pa
                 "reply_to_comment_id": "c1",
                 "created_at": "2026-04-08T10:06:00Z",
                 "text": "Nested",
+                "raw_text": "Bob\nNested\nhttps://www.instagram.com/subject_handle/",
                 "author_name": "Bob",
                 "author_username": "bob",
                 "like_count": "1",
@@ -2571,5 +2574,8 @@ def test_instagram_web_collector_builds_posts_and_comment_snapshots(tmp_path: Pa
 
     assert posts[0].comments_count == 8
     assert posts[0].reactions == 120
+    assert posts[0].raw_text == "Visible Instagram post\n@subject_handle"
     assert [comment.depth for comment in comments] == [0, 1]
+    assert comments[0].raw_text == "Alice\nTop level\n@subject_handle"
+    assert comments[1].raw_text == "Bob\nNested\nhttps://www.instagram.com/subject_handle/"
     assert comments[1].parent_comment_id == comments[0].comment_id

@@ -362,7 +362,7 @@ Runtime assumptions:
 ## Актуальные ограничения и риски
 
 - `threads_web` остаётся нестабильным: UI может вернуть ноль постов даже для валидного публичного профиля.
-- `instagram_web` пока в основном post-level collector, а не полноценный comment collector.
+- `instagram_web` пока остаётся best-effort collector: comment visibility зависит от public DOM, но post/comment snapshots теперь сохраняют `raw_text`, чтобы `person_monitor` не терял handle/profile URL/alias signals, если очищенный `text` оказался пустым или неполным.
 - Facebook heavy reels могут упираться в login wall или нестабильный comment surface даже в authenticated mode. Локализованный visible `comments_count` теперь чаще сохраняется, а comment snapshots стали чище на украинских и русских UI surface, но это всё равно не гарантирует полноту самих comment snapshots.
 - Даже после нового DOM timestamp fallback `facebook_web` всё ещё best-effort: если Facebook не отдаёт сам comment block или заменяет его login wall, ни `author_name`, ни `published_hint`, ни message оттуда локально не восстановить.
 - Важно: чистка и author-selection для `facebook_web` теперь используют один и тот же список локализованных control terms, поэтому если снова появится drift между JS extraction и Python cleanup, это уже будет регрессией именно в этой общей таблице исключений.
@@ -797,3 +797,31 @@ Runtime assumptions:
 
 - authored activity и profile URL mentions для Threads теперь устойчивы к `threads.com`/`threads.net` доменному расхождению;
 - для других платформ URL matching сохраняет прежнее поведение.
+
+## Обновление: Instagram web raw_text для match quality
+
+Следующий data-quality gap был найден в [src/social_posts_analysis/collectors/instagram_web.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\instagram_web.py).
+
+Проблема:
+
+- `person_monitoring.py` уже использует `PostSnapshot.raw_text` и `CommentSnapshot.raw_text` как fallback при поиске `profile_url_mention`, `handle_mention`, `profile_id_mention` и `alias_text_mention`;
+- `instagram_web` сохранял только очищенный `text`;
+- если Instagram public DOM отдавал handle/profile URL/alias в сыром block text, но cleaned `text` был пустым или неполным, `match_hits` мог не появиться.
+
+Что изменено:
+
+- `_extract_profile_payload(...)` теперь добавляет `raw_text` для post payload item;
+- `_extract_post_payload(...)` теперь добавляет `raw_text` для comment payload item;
+- `_build_posts_from_payload(...)` протаскивает `raw_text` в `PostSnapshot`;
+- `_collect_comments_for_post(...)` протаскивает `raw_text` в `CommentSnapshot`.
+
+Почему это сделано в collector-е:
+
+- схема уже поддерживала `raw_text`, а match layer уже умел его использовать;
+- проблема была в потере данных на extraction boundary;
+- не выбран вариант писать `raw_text` в `message`, потому что это загрязнило бы отчёты UI-шумом.
+
+Фактический эффект:
+
+- `instagram_web` стал совместимее с person-monitor matching path;
+- raw payload остаётся доступен для debug, а cleaned `message` остаётся отдельным полем.

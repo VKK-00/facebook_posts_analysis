@@ -96,6 +96,7 @@ class InstagramWebCollector(BaseCollector):
                     source_id=source_id,
                     created_at=item.get("created_at"),
                     message=item.get("text"),
+                    raw_text=item.get("raw_text"),
                     permalink=item.get("permalink"),
                     reactions=parse_compact_number(item.get("like_count")),
                     shares=0,
@@ -147,6 +148,7 @@ class InstagramWebCollector(BaseCollector):
                 thread_root_post_id=post.post_id,
                 created_at=item.get("created_at"),
                 message=item.get("text"),
+                raw_text=item.get("raw_text"),
                 permalink=None,
                 reactions=parse_compact_number(item.get("like_count")),
                 source_collector=self.name,
@@ -174,6 +176,7 @@ class InstagramWebCollector(BaseCollector):
                 if (seen.has(href)) return null;
                 seen.add(href);
                 const imageNode = anchor.querySelector('img');
+                const rawText = (anchor.innerText || imageNode?.getAttribute('alt') || '').trim();
                 return {
                   permalink: href,
                   status_id: href.includes('/reel/')
@@ -181,6 +184,7 @@ class InstagramWebCollector(BaseCollector):
                     : href.split('/p/')[1].split(/[/?#]/)[0],
                   created_at: null,
                   text: imageNode?.getAttribute('alt') || '',
+                  raw_text: rawText,
                   author_name: (document.querySelector('header section h2, header section h1')?.textContent || '').trim(),
                   author_username: (location.pathname.replace(/^\\//, '').split('/')[0] || '').trim(),
                   comment_count: '',
@@ -213,6 +217,7 @@ class InstagramWebCollector(BaseCollector):
                   reply_to_comment_id: node.getAttribute('data-parent-comment-id') || '',
                   created_at: timeNode?.getAttribute('datetime') || null,
                   text: textParts.slice(1).join(' ').trim(),
+                  raw_text: (node.innerText || '').trim(),
                   author_name: textParts[0] || '',
                   author_username: authorLink ? (authorLink.getAttribute('href') || '').replaceAll('/', '') : '',
                   like_count: '',
