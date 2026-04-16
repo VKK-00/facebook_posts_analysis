@@ -273,6 +273,8 @@ class PersonMonitorOrchestrator:
             return self._discover_x_web_sources()
         if self.config.source.platform == "x" and self.config.collector.mode == "x_api":
             return self._discover_x_api_sources()
+        if self.config.source.platform == "instagram" and self.config.collector.mode == "web":
+            return self._discover_instagram_web_sources()
         warnings: list[str] = []
         observed_rows: list[ObservedSourceSnapshot] = []
         search_warning = (
@@ -522,6 +524,46 @@ class PersonMonitorOrchestrator:
             )
         if not discovery_sources:
             warnings.append("X web search discovery completed but found no external surfaces for the configured queries.")
+        return discovery_sources, [], warnings
+
+    def _discover_instagram_web_sources(self) -> tuple[list[DiscoverySource], list[ObservedSourceSnapshot], list[str]]:
+        from social_posts_analysis.collectors.instagram_web import InstagramWebCollector
+
+        warnings: list[str] = []
+        queries = auto_search_queries(self.config.source)
+        try:
+            collector = InstagramWebCollector(self.config)
+            payloads = collector.discover_person_monitor_sources(
+                queries=queries,
+                include_posts=self.config.source.search.include_posts,
+                include_comments=self.config.source.search.include_comments,
+                max_items_per_query=self.config.source.search.max_items_per_query,
+            )
+        except CollectorUnavailableError as exc:
+            warning = f"Instagram web search discovery is unavailable: {exc}"
+            return [], [], [warning]
+
+        discovery_sources: list[DiscoverySource] = []
+        for payload in payloads:
+            if self._is_monitored_surface(payload):
+                continue
+            source_id = (payload.get("source_id") or "").strip()
+            if not source_id:
+                continue
+            discovery_sources.append(
+                DiscoverySource(
+                    source_id=source_id,
+                    source_name=(payload.get("source_name") or None),
+                    source_url=(payload.get("source_url") or None),
+                    source_type=(payload.get("source_type") or "account"),
+                    discovery_kind="search",
+                )
+            )
+        if not discovery_sources:
+            warnings.append(
+                "Instagram web search discovery supports explicit public Instagram profiles only; "
+                "generic text queries cannot discover external surfaces."
+            )
         return discovery_sources, [], warnings
 
     def _collect_surface_manifest(

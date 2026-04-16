@@ -14,7 +14,11 @@ from social_posts_analysis.collectors.facebook_web_content import (
 )
 from social_posts_analysis.collectors.facebook_web_extraction import extract_post_page
 from social_posts_analysis.collectors.instagram_graph_api import InstagramGraphApiCollector
-from social_posts_analysis.collectors.instagram_web import InstagramWebCollector
+from social_posts_analysis.collectors.instagram_web import (
+    InstagramWebCollector,
+    canonical_instagram_permalink,
+    profile_url_from_name,
+)
 from social_posts_analysis.collectors.meta_api import MetaApiCollector
 from social_posts_analysis.collectors.public_web import PublicWebCollector
 from social_posts_analysis.collectors.telegram_bot_api import TelegramBotApiCollector
@@ -2516,9 +2520,9 @@ def test_instagram_web_collector_builds_posts_and_comment_snapshots(tmp_path: Pa
                     "created_at": "2026-04-08T10:00:00Z",
                     "text": "Visible Instagram post",
                     "raw_text": "Visible Instagram post\n@subject_handle",
-                    "permalink": "https://www.instagram.com/p/abc123/",
+                    "permalink": "https://www.instagram.com/p/abc123/?utm_source=ig_web_copy_link#comments",
                     "author_name": "Example Account",
-                    "author_username": "example_account",
+                    "author_username": "@Example_Account",
                     "comment_count": "8",
                     "like_count": "120",
                     "has_media": True,
@@ -2574,8 +2578,54 @@ def test_instagram_web_collector_builds_posts_and_comment_snapshots(tmp_path: Pa
 
     assert posts[0].comments_count == 8
     assert posts[0].reactions == 120
+    assert posts[0].permalink == "https://www.instagram.com/p/abc123/"
     assert posts[0].raw_text == "Visible Instagram post\n@subject_handle"
+    assert posts[0].author.author_id == "example_account"
+    assert posts[0].author.profile_url == "https://www.instagram.com/example_account/"
     assert [comment.depth for comment in comments] == [0, 1]
     assert comments[0].raw_text == "Alice\nTop level\n@subject_handle"
     assert comments[1].raw_text == "Bob\nNested\nhttps://www.instagram.com/subject_handle/"
     assert comments[1].parent_comment_id == comments[0].comment_id
+
+
+def test_instagram_web_post_payload_script_uses_strict_comment_candidates() -> None:
+    collector = InstagramWebCollector(_instagram_web_config())
+    captured: dict[str, str] = {}
+
+    class FakePage:
+        def evaluate(self, script: str) -> dict[str, Any]:
+            captured["script"] = script
+            return {"comments": []}
+
+    collector._extract_post_payload(FakePage())
+
+    assert "isCommentCandidate" in captured["script"]
+    assert "article ul li, div[role=\"dialog\"] ul li, ul li" in captured["script"]
+    assert "ul ul, article ul ul li" not in captured["script"]
+
+
+def test_instagram_web_normalizes_comment_payload_and_drops_empty_noise() -> None:
+    normalized = InstagramWebCollector._normalize_comment_payload_item(
+        {
+            "raw_text": "Alice\n1d\nReply\nSee translation\nUseful comment @subject_handle",
+            "author_username": "Alice",
+        },
+        index=0,
+    )
+
+    assert normalized is not None
+    assert normalized["author_username"] == "alice"
+    assert normalized["text"] == "Useful comment @subject_handle"
+    assert InstagramWebCollector._normalize_comment_payload_item({"raw_text": ""}, index=1) is None
+
+
+def test_instagram_web_canonicalizes_permalink_and_profile_url() -> None:
+    assert canonical_instagram_permalink("https://www.instagram.com/reel/ABC123/?igsh=abc#comments") == (
+        "https://www.instagram.com/reel/ABC123/"
+    )
+    assert canonical_instagram_permalink("/p/XYZ789/?utm_source=ig_web_copy_link") == (
+        "https://www.instagram.com/p/XYZ789/"
+    )
+    assert profile_url_from_name("https://www.instagram.com/Example.Account/?hl=en") == (
+        "https://www.instagram.com/example.account/"
+    )

@@ -333,6 +333,110 @@ def test_person_monitor_threads_web_search_warns_for_comment_only_mode(project_c
     ]
 
 
+def test_person_monitor_instagram_web_search_discovers_explicit_profiles(project_config) -> None:
+    project_config.source.kind = "person_monitor"
+    project_config.source.platform = "instagram"
+    project_config.source.source_id = "subject_handle"
+    project_config.source.source_name = "Subject Name"
+    project_config.source.url = "https://www.instagram.com/subject_handle/"
+    project_config.source.aliases = ["Subject Name"]
+    project_config.source.search.enabled = True
+    project_config.source.search.queries = [
+        "@external_ig",
+        "https://www.instagram.com/subject_handle/?hl=en",
+        "generic subject name mention",
+    ]
+    project_config.collector.mode = "web"
+    project_config.collector.instagram_web.enabled = True
+
+    orchestrator = PersonMonitorOrchestrator(project_config, collector_builder=lambda cfg: [])
+
+    discovery_sources, observed_rows, warnings = orchestrator._discover_search_sources()
+
+    assert observed_rows == []
+    assert warnings == []
+    assert [(item.source_id, item.source_url, item.discovery_kind) for item in discovery_sources] == [
+        ("external_ig", "https://www.instagram.com/external_ig/", "search")
+    ]
+
+
+def test_person_monitor_instagram_web_search_warns_for_generic_queries(project_config) -> None:
+    project_config.source.kind = "person_monitor"
+    project_config.source.platform = "instagram"
+    project_config.source.source_id = "subject_handle"
+    project_config.source.source_name = "Subject Name"
+    project_config.source.url = "https://www.instagram.com/subject_handle/"
+    project_config.source.aliases = ["Subject Name"]
+    project_config.source.search.enabled = True
+    project_config.source.search.queries = ["generic subject name mention"]
+    project_config.collector.mode = "web"
+    project_config.collector.instagram_web.enabled = True
+
+    orchestrator = PersonMonitorOrchestrator(project_config, collector_builder=lambda cfg: [])
+
+    discovery_sources, observed_rows, warnings = orchestrator._discover_search_sources()
+
+    assert discovery_sources == []
+    assert observed_rows == []
+    assert warnings == [
+        "Instagram web search discovery supports explicit public Instagram profiles only; "
+        "generic text queries cannot discover external surfaces."
+    ]
+
+
+def test_person_monitor_instagram_web_dedupes_watchlist_and_search_surface(project_config, tmp_path) -> None:
+    project_config.source.kind = "person_monitor"
+    project_config.source.platform = "instagram"
+    project_config.source.source_id = "subject_handle"
+    project_config.source.source_name = "Subject Name"
+    project_config.source.url = "https://www.instagram.com/subject_handle/"
+    project_config.source.watchlist = [
+        WatchlistSourceConfig(
+            source_id="external_ig",
+            source_name="External IG",
+            url="https://www.instagram.com/external_ig/",
+            source_type="account",
+        )
+    ]
+    project_config.source.search.enabled = True
+    project_config.source.search.queries = ["@external_ig"]
+    project_config.collector.mode = "web"
+    project_config.collector.instagram_web.enabled = True
+
+    calls: list[str] = []
+
+    class FakeCollector:
+        name = "fake_instagram_web"
+
+        def __init__(self, config) -> None:
+            self.config = config
+
+        def collect(self, run_id, raw_store):  # noqa: ANN001, ANN201
+            calls.append(self.config.source.source_id or "")
+            return CollectionManifest(
+                run_id=run_id,
+                collected_at="2026-04-16T10:00:00+00:00",
+                collector=self.name,
+                mode="web",
+                request_signature=build_request_signature(self.config),
+                source=SourceSnapshot(
+                    platform="instagram",
+                    source_id="external_ig",
+                    source_name="External IG",
+                    source_url="https://www.instagram.com/external_ig/",
+                    source_type="account",
+                    source_collector=self.name,
+                ),
+                posts=[],
+            )
+
+    orchestrator = PersonMonitorOrchestrator(project_config, collector_builder=lambda cfg: [FakeCollector(cfg)])
+
+    orchestrator.collect("pm-instagram-run-1", RawSnapshotStore(tmp_path / "raw"))
+
+    assert calls == ["external_ig"]
+
+
 def test_person_monitor_x_web_search_discovers_external_sources(project_config, monkeypatch) -> None:
     project_config.source.kind = "person_monitor"
     project_config.source.platform = "x"

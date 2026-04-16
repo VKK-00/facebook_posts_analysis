@@ -825,3 +825,37 @@ Runtime assumptions:
 
 - `instagram_web` стал совместимее с person-monitor matching path;
 - raw payload остаётся доступен для debug, а cleaned `message` остаётся отдельным полем.
+
+## Обновление: Instagram web comment extraction и explicit discovery
+
+После сохранения `raw_text` следующий gap был в том, что `instagram_web` всё ещё слишком широко выбирал DOM-узлы комментариев и не имел собственного search discovery path для `person_monitor`.
+
+Что изменено:
+
+- [src/social_posts_analysis/collectors/instagram_web.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\instagram_web.py) теперь использует strict comment candidates вместо старого широкого selector `ul ul, article ul ul li`;
+- comment candidate принимается только при наличии содержательного raw text и хотя бы одного реального сигнала: author profile link, `time[datetime]` или explicit `data-comment-id`;
+- `_normalize_comment_payload_item(...)` нормализует comment payload перед `CommentSnapshot`, сохраняет `raw_text`, убирает простые UI-noise строки вроде `Reply`, `See translation`, `1d`;
+- `canonical_instagram_permalink(...)` убирает query/fragment и сохраняет canonical `/p/<id>/` или `/reel/<id>/`;
+- `profile_url_from_name(...)` и `instagram_username_from_reference(...)` нормализуют Instagram profile URL к `https://www.instagram.com/<username>/`;
+- `InstagramWebCollector.discover_person_monitor_sources(...)` поддерживает только explicit public profile discovery: `@username`, `username`, `https://www.instagram.com/username/`;
+- [src/social_posts_analysis/person_monitoring.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\person_monitoring.py) теперь routes `platform="instagram" + collector.mode="web"` в этот discovery path.
+
+Что принципиально не изменено:
+
+- это не global Instagram search;
+- generic text queries по Instagram web не ищут внешние surfaces и должны возвращать warning;
+- nested comments не угадываются по layout: `reply_to_comment_id` используется только если DOM явно его отдал;
+- normalized table names и public config schema не менялись.
+
+Фактический эффект:
+
+- `instagram_web` стал чище на comment extraction boundary;
+- `person_monitor` теперь может использовать explicit Instagram profiles как search-discovery surfaces;
+- watchlist и search discovery одного и того же Instagram profile дедуплицируются общим orchestrator flow.
+
+Что подтверждено live:
+
+- smoke-run `20260416T100506Z` с временным config `person_monitor + instagram_web` нашёл `2` observed surfaces: `nasa` через watchlist и `natgeo` через search query `@natgeo`;
+- root report и exports были построены, включая `observed_sources.csv` и `match_hits.csv`;
+- public Instagram profile DOM для `nasa` и `natgeo` отдал `posts: []`, поэтому итоговые `posts=0`, `comments=0`, `match_hits=0`;
+- это считается внешним ограничением public Instagram DOM/login-wall surface, а не регрессией discovery path.

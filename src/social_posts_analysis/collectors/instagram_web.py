@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 from typing import Any
+from urllib.parse import urlparse
 
 from social_posts_analysis.config import ProjectConfig
 from social_posts_analysis.contracts import (
@@ -11,7 +13,7 @@ from social_posts_analysis.contracts import (
     SourceSnapshot,
 )
 from social_posts_analysis.raw_store import RawSnapshotStore
-from social_posts_analysis.utils import parse_compact_number, slugify, utc_now_iso
+from social_posts_analysis.utils import parse_compact_number, slugify, stable_id, utc_now_iso
 
 from .base import BaseCollector, CollectorUnavailableError
 from .range_utils import RangeFilter
@@ -84,10 +86,14 @@ class InstagramWebCollector(BaseCollector):
         raw_store: RawSnapshotStore,
     ) -> list[PostSnapshot]:
         posts: list[PostSnapshot] = []
-        for item in payload.get("posts") or []:
+        for raw_item in payload.get("posts") or []:
+            item = self._normalize_post_payload_item(raw_item)
+            status_id = str(item.get("status_id") or "")
+            if not status_id:
+                continue
             if not self._within_range(item.get("created_at")):
                 continue
-            post_id = f"instagram:{source_id}:{item['status_id']}"
+            post_id = f"instagram:{source_id}:{status_id}"
             raw_path = raw_store.write_json("instagram_web_posts", slugify(post_id), item)
             posts.append(
                 PostSnapshot(
@@ -108,11 +114,31 @@ class InstagramWebCollector(BaseCollector):
                     author=AuthorSnapshot(
                         author_id=item.get("author_username") or source_id,
                         name=item.get("author_name") or source_name,
-                        profile_url=f"https://www.instagram.com/{item.get('author_username')}/" if item.get("author_username") else profile_url_from_name(source_id),
+                        profile_url=profile_url_from_name(item.get("author_username") or source_id),
                     ),
                 )
             )
         return posts
+
+    def discover_person_monitor_sources(
+        self,
+        *,
+        queries: list[str],
+        include_posts: bool,
+        include_comments: bool,
+        max_items_per_query: int,
+    ) -> list[dict[str, str | None]]:
+        if not include_posts and not include_comments:
+            return []
+        discovered: dict[str, dict[str, str | None]] = {}
+        for query in queries:
+            payload = self._resolve_search_discovery_profile(query)
+            if not payload:
+                continue
+            source_id = payload.get("source_id")
+            if source_id:
+                discovered[source_id] = payload
+        return list(discovered.values())
 
     def _collect_comments_for_post(self, *, context: Any, post: PostSnapshot, raw_store: RawSnapshotStore) -> list[CommentSnapshot]:
         if not post.permalink:
@@ -128,7 +154,10 @@ class InstagramWebCollector(BaseCollector):
         comments: list[CommentSnapshot] = []
         comment_id_map: dict[str, str] = {}
         depth_map: dict[str, int] = {}
-        for item in payload.get("comments") or []:
+        for index, raw_item in enumerate(payload.get("comments") or []):
+            item = self._normalize_comment_payload_item(raw_item, index=index)
+            if item is None:
+                continue
             if not self._within_range(item.get("created_at")):
                 continue
             status_id = str(item.get("comment_id") or "")
@@ -139,6 +168,7 @@ class InstagramWebCollector(BaseCollector):
             parent_comment_id = comment_id_map.get(parent_native_id) if parent_native_id else None
             depth = depth_map.get(parent_comment_id, -1) + 1 if parent_comment_id else 0
             raw_path = raw_store.write_json("instagram_web_comment_items", slugify(comment_id), item)
+            author_username = str(item.get("author_username") or "")
             snapshot = CommentSnapshot(
                 comment_id=comment_id,
                 platform="instagram",
@@ -155,9 +185,9 @@ class InstagramWebCollector(BaseCollector):
                 depth=depth,
                 raw_path=str(raw_path),
                 author=AuthorSnapshot(
-                    author_id=item.get("author_username"),
+                    author_id=author_username or None,
                     name=item.get("author_name"),
-                    profile_url=f"https://www.instagram.com/{item.get('author_username')}/" if item.get("author_username") else None,
+                    profile_url=profile_url_from_name(author_username) if author_username else None,
                 ),
             )
             comments.append(snapshot)
@@ -169,10 +199,20 @@ class InstagramWebCollector(BaseCollector):
         return page.evaluate(
             """
             () => {
+              const canonicalPostUrl = (href) => {
+                try {
+                  const url = new URL(href, 'https://www.instagram.com');
+                  const parts = url.pathname.split('/').filter(Boolean);
+                  if (parts.length >= 2 && ['p', 'reel'].includes(parts[0])) {
+                    return `https://www.instagram.com/${parts[0]}/${parts[1]}/`;
+                  }
+                } catch (error) {}
+                return href;
+              };
               const links = Array.from(document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'));
               const seen = new Set();
               const posts = links.map((anchor) => {
-                const href = anchor.href || '';
+                const href = canonicalPostUrl(anchor.href || '');
                 if (seen.has(href)) return null;
                 seen.add(href);
                 const imageNode = anchor.querySelector('img');
@@ -207,19 +247,36 @@ class InstagramWebCollector(BaseCollector):
         return page.evaluate(
             """
             () => {
-              const commentNodes = Array.from(document.querySelectorAll('ul ul, article ul ul li'));
+              const isProfileHref = (href) => {
+                const parts = (href || '').split('?')[0].split('#')[0].split('/').filter(Boolean);
+                if (parts.length !== 1) return false;
+                return /^[A-Za-z0-9._]{1,30}$/.test(parts[0]);
+              };
+              const isUiNoise = (value) => {
+                const text = (value || '').trim().toLowerCase();
+                return !text || ['reply', 'see translation', 'view replies', 'view reply'].includes(text);
+              };
+              const isCommentCandidate = (node) => {
+                const rawText = (node.innerText || '').trim();
+                const authorLink = Array.from(node.querySelectorAll('a[href^="/"]')).find((anchor) => isProfileHref(anchor.getAttribute('href') || ''));
+                const timeNode = node.querySelector('time[datetime]');
+                return Boolean(rawText && (authorLink || timeNode || node.getAttribute('data-comment-id')));
+              };
+              const commentNodes = Array.from(document.querySelectorAll('article ul li, div[role="dialog"] ul li, ul li')).filter(isCommentCandidate);
               const comments = commentNodes.map((node, index) => {
-                const authorLink = node.querySelector('a[href^="/"]');
+                const authorLink = Array.from(node.querySelectorAll('a[href^="/"]')).find((anchor) => isProfileHref(anchor.getAttribute('href') || ''));
                 const timeNode = node.querySelector('time');
-                const textParts = Array.from(node.querySelectorAll('span')).map((span) => (span.textContent || '').trim()).filter(Boolean);
+                const textParts = Array.from(node.querySelectorAll('span')).map((span) => (span.textContent || '').trim()).filter((value) => value && !isUiNoise(value));
+                const authorUsername = authorLink ? (authorLink.getAttribute('href') || '').replaceAll('/', '').split('?')[0].split('#')[0] : '';
+                const authorName = textParts[0] || authorUsername;
                 return {
-                  comment_id: node.getAttribute('data-comment-id') || String(index + 1),
+                  comment_id: node.getAttribute('data-comment-id') || node.id || String(index + 1),
                   reply_to_comment_id: node.getAttribute('data-parent-comment-id') || '',
                   created_at: timeNode?.getAttribute('datetime') || null,
                   text: textParts.slice(1).join(' ').trim(),
                   raw_text: (node.innerText || '').trim(),
-                  author_name: textParts[0] || '',
-                  author_username: authorLink ? (authorLink.getAttribute('href') || '').replaceAll('/', '') : '',
+                  author_name: authorName,
+                  author_username: authorUsername,
                   like_count: '',
                 };
               });
@@ -227,6 +284,72 @@ class InstagramWebCollector(BaseCollector):
             }
             """
         )
+
+    @classmethod
+    def _normalize_post_payload_item(cls, item: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(item)
+        permalink = canonical_instagram_permalink(normalized.get("permalink"))
+        if permalink:
+            normalized["permalink"] = permalink
+        if not normalized.get("status_id"):
+            normalized["status_id"] = instagram_status_id_from_permalink(permalink)
+        author_username = instagram_username_from_reference(normalized.get("author_username"))
+        if author_username:
+            normalized["author_username"] = author_username
+        return normalized
+
+    @classmethod
+    def _normalize_comment_payload_item(cls, item: dict[str, Any], *, index: int) -> dict[str, Any] | None:
+        raw_text = clean_text(item.get("raw_text"))
+        text = clean_text(item.get("text"))
+        author_username = instagram_username_from_reference(item.get("author_username")) or ""
+        author_name = clean_text(item.get("author_name"))
+        created_at = clean_text(item.get("created_at"))
+        if not text and raw_text:
+            text = cls._derive_comment_text(raw_text, author_username=author_username, author_name=author_name)
+        if not any([raw_text, text, author_username, author_name, created_at]):
+            return None
+        comment_id = clean_text(item.get("comment_id")) or stable_id(raw_text, text, author_username, created_at, str(index))
+        return {
+            "comment_id": comment_id,
+            "reply_to_comment_id": clean_text(item.get("reply_to_comment_id")),
+            "created_at": created_at or None,
+            "text": text,
+            "raw_text": raw_text,
+            "author_name": author_name or author_username,
+            "author_username": author_username,
+            "like_count": clean_text(item.get("like_count")),
+        }
+
+    @classmethod
+    def _derive_comment_text(cls, raw_text: str, *, author_username: str, author_name: str) -> str:
+        author_tokens = {author_username.casefold(), author_name.casefold()} - {""}
+        lines: list[str] = []
+        for line in [part.strip() for part in re.split(r"[\r\n]+", raw_text) if part.strip()]:
+            lowered = line.casefold()
+            if lowered in author_tokens or cls._is_comment_ui_noise(line):
+                continue
+            lines.append(line)
+        return " ".join(lines).strip()
+
+    @staticmethod
+    def _is_comment_ui_noise(value: str) -> bool:
+        lowered = value.strip().casefold()
+        if lowered in {"reply", "see translation", "view reply", "view replies"}:
+            return True
+        return bool(re.fullmatch(r"\d+\s*(s|m|h|d|w)", lowered))
+
+    @staticmethod
+    def _resolve_search_discovery_profile(query: str) -> dict[str, str | None] | None:
+        username = instagram_username_from_reference(query)
+        if not username:
+            return None
+        return {
+            "source_id": username,
+            "source_name": username,
+            "source_url": profile_url_from_name(username),
+            "source_type": "account",
+        }
 
     def _open_collection_context(self, playwright: Any) -> WebCollectorRuntime:
         return open_web_runtime(
@@ -250,7 +373,8 @@ class InstagramWebCollector(BaseCollector):
 
     def _resolve_profile_url(self) -> str:
         if self.config.source.url:
-            return self.config.source.url.rstrip("/")
+            username = instagram_username_from_reference(self.config.source.url)
+            return profile_url_from_name(username) if username else self.config.source.url.rstrip("/")
         return profile_url_from_name(self._source_reference())
 
     def _source_reference(self) -> str:
@@ -259,7 +383,9 @@ class InstagramWebCollector(BaseCollector):
         if self.config.source.source_id:
             return self.config.source.source_id
         if self.config.source.url:
-            return self.config.source.url.rstrip("/").split("/")[-1]
+            username = instagram_username_from_reference(self.config.source.url)
+            if username:
+                return username
         raise CollectorUnavailableError("Instagram web collector requires source.url, source.source_name, or source.source_id.")
 
     def _within_range(self, raw_value: str | None) -> bool:
@@ -267,4 +393,50 @@ class InstagramWebCollector(BaseCollector):
 
 
 def profile_url_from_name(name: str) -> str:
-    return f"https://www.instagram.com/{name.lstrip('@')}/"
+    username = instagram_username_from_reference(name) or name.strip().lstrip("@")
+    return f"https://www.instagram.com/{username}/"
+
+
+def canonical_instagram_permalink(value: Any) -> str:
+    if not value:
+        return ""
+    raw_value = str(value).strip()
+    parsed = urlparse(raw_value if "://" in raw_value else f"https://www.instagram.com/{raw_value.lstrip('/')}")
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 2 and parts[0] in {"p", "reel"}:
+        return f"https://www.instagram.com/{parts[0]}/{parts[1]}/"
+    return raw_value.rstrip("/")
+
+
+def instagram_status_id_from_permalink(value: str | None) -> str:
+    if not value:
+        return ""
+    parsed = urlparse(value if "://" in value else f"https://www.instagram.com/{value.lstrip('/')}")
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) >= 2 and parts[0] in {"p", "reel"}:
+        return parts[1]
+    return ""
+
+
+def instagram_username_from_reference(value: Any) -> str | None:
+    if not value:
+        return None
+    candidate = str(value).strip().lstrip("@")
+    if not candidate:
+        return None
+    if "://" in candidate:
+        parsed = urlparse(candidate)
+        parts = [part for part in parsed.path.split("/") if part]
+        if not parts:
+            return None
+        candidate = parts[0].lstrip("@")
+    candidate = candidate.strip("/").casefold()
+    if candidate in {"p", "reel", "reels", "explore", "accounts", "stories", "direct"}:
+        return None
+    if re.fullmatch(r"[a-z0-9._]{1,30}", candidate):
+        return candidate
+    return None
+
+
+def clean_text(value: Any) -> str:
+    return str(value or "").strip()
