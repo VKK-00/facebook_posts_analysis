@@ -1165,3 +1165,77 @@ Privacy/безопасность:
 - на profile page `nasa` текущий Instagram DOM/script snapshot больше похож на boot/resource/config payload, а не на media feed payload;
 - следующий extractor batch не должен вслепую добавлять JSON extraction из этих scripts;
 - если нужно продолжать Instagram, следующий точный шаг: прогнать `doctor-instagram-web` на detail URL `/p/.../` или `/reel/.../`, где вероятнее появятся media/comment-specific JSON paths.
+
+## Live smoke: Instagram web detail URL diagnostics
+
+Следующий live smoke был выполнен на detail URL:
+
+- target URL: `https://www.instagram.com/p/werA7gxc8Y/`;
+- это старый embedded NASA post URL, найденный через внешнюю страницу с Instagram embed;
+- run id: `doctor-detail-nasa-1`;
+- browser profile: Chrome `Default`;
+- `authenticated_browser.enabled=true`;
+- `copy_profile=true`.
+
+Результат до target-aware фильтра:
+
+- `status=content_visible`;
+- `final_url=https://www.instagram.com/p/werA7gxc8Y/`;
+- `login_wall_detected=false`;
+- `profile_unavailable_detected=false`;
+- `serialized_data_detected=true`;
+- `body_text_length=0`;
+- `json_script_blocks=62`;
+- `media_candidates=10`;
+- `comment_candidates=15`;
+- `scripts_analyzed=62`;
+- `parse_errors=0`.
+
+Важное наблюдение:
+
+- первые `media_samples` были не целевым NASA post, а unrelated/recommended payload с `author_username=starbucks`;
+- значит сам факт `media_candidates > 0` на Instagram detail page недостаточен для extraction;
+- diagnostic path должен различать target media по shortcode из URL и unrelated media из рекомендательных/session blocks.
+
+## Обновление: Instagram web target-aware diagnostics
+
+После detail smoke добавлен target-aware слой для `doctor-instagram-web`.
+
+Что изменено:
+
+- diagnostic JSON теперь содержит `target_status_id`;
+- `extraction_sources` теперь содержит:
+  - `target_media_candidates`;
+  - `other_media_candidates`;
+- `serialized_candidates` теперь содержит:
+  - `media`;
+  - `target_media`;
+  - `other_media`;
+  - `comments`.
+
+Почему это важно:
+
+- Instagram может держать в scripts не только текущий post, но и recommended media;
+- без target-aware фильтра можно ошибочно считать, что detail page отдаёт целевой post payload;
+- extractor work можно начинать только если `target_media_candidates > 0` для конкретного `/p/<shortcode>/` или `/reel/<shortcode>/`.
+
+После добавления target-aware слоя smoke был повторён:
+
+- target URL: `https://www.instagram.com/p/werA7gxc8Y/`;
+- run id: `doctor-detail-target-author-nasa-1`;
+- configured source: `nasa`;
+- `target_status_id=werA7gxc8Y`;
+- `target_media_candidates=1`;
+- `other_media_candidates=9`;
+- `comment_candidates=15`;
+- `target_author_username=starbucks`.
+
+Новый warning:
+
+- `Instagram detail target media author starbucks does not match configured Instagram source nasa; the target URL may not belong to the requested profile.`
+
+Итоговое правило:
+
+- наличие `target_media_candidates > 0` ещё не достаточно, если configured source важен;
+- для безопасного Instagram extraction нужно одновременно проверять `target_media_candidates > 0` и совпадение `target_author_username` с ожидаемым source username;
+- текущий использованный detail URL не подходит как NASA acceptance fixture, потому что целевой post принадлежит `starbucks`.

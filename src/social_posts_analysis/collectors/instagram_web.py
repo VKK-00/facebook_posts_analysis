@@ -176,12 +176,23 @@ class InstagramWebCollector(BaseCollector):
                 runtime.close()
 
         warnings.extend(self._session_diagnostic_warnings(status))
+        target_status_id = instagram_status_id_from_permalink(resolved_target_url) or instagram_status_id_from_permalink(
+            clean_text(payload.get("final_url"))
+        )
         page_state = self._normalize_session_page_state(payload.get("page_state") or {})
         extraction_sources = payload.get("extraction_sources") or {}
+        serialized_candidates = self._normalize_serialized_candidate_samples(
+            payload.get("serialized_candidates") or {},
+            target_status_id=target_status_id,
+        )
+        target_author_username = self._target_author_username(serialized_candidates)
+        warnings.extend(self._target_author_warnings(target_author_username))
         return {
             "collector": self.name,
             "target_url": resolved_target_url,
             "final_url": clean_text(payload.get("final_url")) or resolved_target_url,
+            "target_status_id": target_status_id,
+            "target_author_username": target_author_username,
             "authenticated_browser_enabled": settings.enabled,
             "browser": settings.browser,
             "profile_directory": settings.profile_directory,
@@ -193,10 +204,10 @@ class InstagramWebCollector(BaseCollector):
                 "json_script_blocks": self._int_value(extraction_sources.get("json_script_blocks")),
                 "media_candidates": self._int_value(extraction_sources.get("media_candidates")),
                 "comment_candidates": self._int_value(extraction_sources.get("comment_candidates")),
+                "target_media_candidates": self._int_value(extraction_sources.get("target_media_candidates")),
+                "other_media_candidates": self._int_value(extraction_sources.get("other_media_candidates")),
             },
-            "serialized_candidates": self._normalize_serialized_candidate_samples(
-                payload.get("serialized_candidates") or {}
-            ),
+            "serialized_candidates": serialized_candidates,
             "serialized_structure": self._normalize_serialized_structure(payload.get("serialized_structure") or {}),
             "warnings": list(dict.fromkeys(warnings)),
             "body_sample": clean_text(payload.get("body_sample")),
@@ -645,6 +656,14 @@ class InstagramWebCollector(BaseCollector):
                 return '';
               };
               const firstText = (...values) => values.map(textValue).find(Boolean) || '';
+              const statusIdFromUrl = (href) => {
+                try {
+                  const url = new URL(href, 'https://www.instagram.com');
+                  const parts = url.pathname.split('/').filter(Boolean);
+                  if (parts.length >= 2 && ['p', 'reel'].includes(parts[0])) return parts[1];
+                } catch (error) {}
+                return '';
+              };
               const captionText = (item) => {
                 const edgeCaption = item?.edge_media_to_caption?.edges?.[0]?.node?.text;
                 const caption = item?.caption;
@@ -907,6 +926,13 @@ class InstagramWebCollector(BaseCollector):
               }
               const uniqueMediaCandidates = dedupeByKey(mediaCandidates, 'status_id');
               const uniqueCommentCandidates = dedupeByKey(commentCandidates, 'comment_id');
+              const targetStatusId = statusIdFromUrl(location.href);
+              const targetMediaCandidates = targetStatusId
+                ? uniqueMediaCandidates.filter((item) => item.status_id === targetStatusId)
+                : [];
+              const otherMediaCandidates = targetStatusId
+                ? uniqueMediaCandidates.filter((item) => item.status_id !== targetStatusId)
+                : uniqueMediaCandidates;
               const serializedStructure = collectSerializedStructure(parsedScripts);
               return {
                 final_url: location.href,
@@ -923,9 +949,13 @@ class InstagramWebCollector(BaseCollector):
                   json_script_blocks: jsonScripts.length,
                   media_candidates: uniqueMediaCandidates.length,
                   comment_candidates: uniqueCommentCandidates.length,
+                  target_media_candidates: targetMediaCandidates.length,
+                  other_media_candidates: otherMediaCandidates.length,
                 },
                 serialized_candidates: {
                   media: uniqueMediaCandidates.slice(0, 5),
+                  target_media: targetMediaCandidates.slice(0, 5),
+                  other_media: otherMediaCandidates.slice(0, 5),
                   comments: uniqueCommentCandidates.slice(0, 5),
                 },
                 serialized_structure: {
@@ -1084,6 +1114,30 @@ class InstagramWebCollector(BaseCollector):
             return ["Instagram web session diagnostic loaded an empty DOM with no visible profile or serialized data signals."]
         return []
 
+    @staticmethod
+    def _target_author_username(serialized_candidates: dict[str, list[dict[str, Any]]]) -> str:
+        target_media = serialized_candidates.get("target_media") or []
+        if not target_media:
+            return ""
+        return clean_text(target_media[0].get("author_username"))
+
+    def _target_author_warnings(self, target_author_username: str) -> list[str]:
+        expected_username = self._expected_source_username()
+        if not target_author_username or not expected_username or target_author_username == expected_username:
+            return []
+        return [
+            "Instagram detail target media author "
+            f"{target_author_username} does not match configured Instagram source {expected_username}; "
+            "the target URL may not belong to the requested profile."
+        ]
+
+    def _expected_source_username(self) -> str:
+        for value in (self.config.source.url, self.config.source.source_id, self.config.source.source_name):
+            username = instagram_username_from_reference(value)
+            if username:
+                return username
+        return ""
+
     @classmethod
     def _normalize_session_page_state(cls, page_state: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -1094,25 +1148,39 @@ class InstagramWebCollector(BaseCollector):
         }
 
     @classmethod
-    def _normalize_serialized_candidate_samples(cls, candidates: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    def _normalize_serialized_candidate_samples(
+        cls,
+        candidates: dict[str, Any],
+        *,
+        target_status_id: str,
+    ) -> dict[str, list[dict[str, Any]]]:
         raw_media = candidates.get("media") if isinstance(candidates, dict) else []
+        raw_target_media = candidates.get("target_media") if isinstance(candidates, dict) else []
+        raw_other_media = candidates.get("other_media") if isinstance(candidates, dict) else []
         raw_comments = candidates.get("comments") if isinstance(candidates, dict) else []
         media = raw_media if isinstance(raw_media, list) else []
+        target_media = raw_target_media if isinstance(raw_target_media, list) else []
+        other_media = raw_other_media if isinstance(raw_other_media, list) else []
         comments = raw_comments if isinstance(raw_comments, list) else []
+        normalized_media = [cls._normalize_media_candidate_sample(item) for item in media[:5] if isinstance(item, dict)]
+        normalized_target_media = [
+            cls._normalize_media_candidate_sample(item) for item in target_media[:5] if isinstance(item, dict)
+        ]
+        normalized_other_media = [
+            cls._normalize_media_candidate_sample(item) for item in other_media[:5] if isinstance(item, dict)
+        ]
+        if not normalized_target_media and target_status_id:
+            normalized_target_media = [
+                item for item in normalized_media if item.get("status_id") == target_status_id
+            ][:5]
+        if not normalized_other_media:
+            normalized_other_media = [
+                item for item in normalized_media if not target_status_id or item.get("status_id") != target_status_id
+            ][:5]
         return {
-            "media": [
-                {
-                    "status_id": clean_text(item.get("status_id")),
-                    "permalink": canonical_instagram_permalink(item.get("permalink")),
-                    "author_username": instagram_username_from_reference(item.get("author_username")) or "",
-                    "has_text": bool(item.get("has_text")),
-                    "text_sample": clean_text(item.get("text_sample"))[:160],
-                    "comment_count": clean_text(item.get("comment_count")),
-                    "like_count": clean_text(item.get("like_count")),
-                }
-                for item in media[:5]
-                if isinstance(item, dict)
-            ],
+            "media": normalized_media,
+            "target_media": normalized_target_media,
+            "other_media": normalized_other_media,
             "comments": [
                 {
                     "comment_id": clean_text(item.get("comment_id")),
@@ -1124,6 +1192,18 @@ class InstagramWebCollector(BaseCollector):
                 for item in comments[:5]
                 if isinstance(item, dict)
             ],
+        }
+
+    @staticmethod
+    def _normalize_media_candidate_sample(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "status_id": clean_text(item.get("status_id")),
+            "permalink": canonical_instagram_permalink(item.get("permalink")),
+            "author_username": instagram_username_from_reference(item.get("author_username")) or "",
+            "has_text": bool(item.get("has_text")),
+            "text_sample": clean_text(item.get("text_sample"))[:160],
+            "comment_count": clean_text(item.get("comment_count")),
+            "like_count": clean_text(item.get("like_count")),
         }
 
     @classmethod

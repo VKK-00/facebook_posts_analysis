@@ -2705,8 +2705,10 @@ def test_instagram_web_diagnose_browser_session_reports_login_wall(monkeypatch) 
                     "json_script_blocks": 0,
                     "media_candidates": 0,
                     "comment_candidates": 0,
+                    "target_media_candidates": 0,
+                    "other_media_candidates": 0,
                 },
-                "serialized_candidates": {"media": [], "comments": []},
+                "serialized_candidates": {"media": [], "target_media": [], "other_media": [], "comments": []},
                 "serialized_structure": {
                     "scripts_analyzed": 0,
                     "parse_errors": 0,
@@ -2750,9 +2752,11 @@ def test_instagram_web_diagnose_browser_session_reports_login_wall(monkeypatch) 
     assert diagnostic["copy_profile"] is True
     assert diagnostic["target_url"] == "https://www.instagram.com/nasa/"
     assert diagnostic["final_url"] == "https://www.instagram.com/nasa/"
+    assert diagnostic["target_status_id"] == ""
     assert diagnostic["page_state"]["body_text_length"] == 18
     assert diagnostic["extraction_sources"]["media_candidates"] == 0
-    assert diagnostic["serialized_candidates"] == {"media": [], "comments": []}
+    assert diagnostic["extraction_sources"]["target_media_candidates"] == 0
+    assert diagnostic["serialized_candidates"] == {"media": [], "target_media": [], "other_media": [], "comments": []}
     assert diagnostic["serialized_structure"]["scripts_analyzed"] == 0
     assert "raw_json" not in diagnostic["serialized_structure"]
     assert "runtime warning" in diagnostic["warnings"]
@@ -2782,17 +2786,50 @@ def test_instagram_web_diagnose_browser_session_reports_content_visible(monkeypa
                     "json_script_blocks": 1,
                     "media_candidates": 2,
                     "comment_candidates": 1,
+                    "target_media_candidates": 1,
+                    "other_media_candidates": 1,
                 },
                 "serialized_candidates": {
                     "media": [
                         {
-                            "status_id": "ABC123",
-                            "permalink": "https://www.instagram.com/p/ABC123/",
+                            "status_id": "TARGET123",
+                            "permalink": "https://www.instagram.com/p/TARGET123/",
                             "author_username": "example_account",
                             "has_text": True,
                             "text_sample": "Caption with @subject",
                             "comment_count": "3",
                             "like_count": "9",
+                        },
+                        {
+                            "status_id": "OTHER456",
+                            "permalink": "https://www.instagram.com/p/OTHER456/",
+                            "author_username": "recommended_account",
+                            "has_text": True,
+                            "text_sample": "Recommended post",
+                            "comment_count": "1",
+                            "like_count": "2",
+                        }
+                    ],
+                    "target_media": [
+                        {
+                            "status_id": "TARGET123",
+                            "permalink": "https://www.instagram.com/p/TARGET123/",
+                            "author_username": "example_account",
+                            "has_text": True,
+                            "text_sample": "Caption with @subject",
+                            "comment_count": "3",
+                            "like_count": "9",
+                        }
+                    ],
+                    "other_media": [
+                        {
+                            "status_id": "OTHER456",
+                            "permalink": "https://www.instagram.com/p/OTHER456/",
+                            "author_username": "recommended_account",
+                            "has_text": True,
+                            "text_sample": "Recommended post",
+                            "comment_count": "1",
+                            "like_count": "2",
                         }
                     ],
                     "comments": [
@@ -2857,15 +2894,20 @@ def test_instagram_web_diagnose_browser_session_reports_content_visible(monkeypa
         lambda playwright: SimpleNamespace(context=FakeContext(), warnings=[], close=lambda: None),
     )
 
-    diagnostic = collector.diagnose_browser_session(None)
+    diagnostic = collector.diagnose_browser_session("https://www.instagram.com/p/TARGET123/")
 
     assert diagnostic["status"] == "content_visible"
-    assert diagnostic["target_url"] == "https://www.instagram.com/example_account/"
+    assert diagnostic["target_url"] == "https://www.instagram.com/p/TARGET123/"
+    assert diagnostic["target_status_id"] == "TARGET123"
     assert diagnostic["page_state"]["serialized_data_detected"] is True
     assert diagnostic["extraction_sources"]["post_links"] == 1
     assert diagnostic["extraction_sources"]["media_candidates"] == 2
     assert diagnostic["extraction_sources"]["comment_candidates"] == 1
-    assert diagnostic["serialized_candidates"]["media"][0]["status_id"] == "ABC123"
+    assert diagnostic["extraction_sources"]["target_media_candidates"] == 1
+    assert diagnostic["extraction_sources"]["other_media_candidates"] == 1
+    assert diagnostic["serialized_candidates"]["media"][0]["status_id"] == "TARGET123"
+    assert diagnostic["serialized_candidates"]["target_media"][0]["status_id"] == "TARGET123"
+    assert diagnostic["serialized_candidates"]["other_media"][0]["status_id"] == "OTHER456"
     assert diagnostic["serialized_candidates"]["comments"][0]["comment_id"] == "c1"
     assert diagnostic["serialized_structure"]["scripts_analyzed"] == 1
     assert diagnostic["serialized_structure"]["top_level_keys"] == [{"key": "require", "count": 1}]
@@ -2899,9 +2941,13 @@ def test_instagram_web_session_diagnostic_script_counts_serialized_candidates() 
                     "json_script_blocks": 1,
                     "media_candidates": 1,
                     "comment_candidates": 1,
+                    "target_media_candidates": 1,
+                    "other_media_candidates": 0,
                 },
                 "serialized_candidates": {
                     "media": [{"status_id": "ABC123", "permalink": "https://www.instagram.com/p/ABC123/"}],
+                    "target_media": [{"status_id": "ABC123", "permalink": "https://www.instagram.com/p/ABC123/"}],
+                    "other_media": [],
                     "comments": [{"comment_id": "c1", "author_username": "alice"}],
                 },
                 "serialized_structure": {
@@ -2935,6 +2981,79 @@ def test_instagram_web_session_diagnostic_script_counts_serialized_candidates() 
     assert payload["extraction_sources"]["media_candidates"] == 1
     assert payload["serialized_candidates"]["media"][0]["status_id"] == "ABC123"
     assert payload["serialized_structure"]["key_paths"][0]["path"] == "$.require[]"
+
+
+def test_instagram_web_diagnose_browser_session_warns_on_target_author_mismatch(monkeypatch) -> None:
+    config = _instagram_web_config()
+    config.source.source_name = "nasa"
+    collector = InstagramWebCollector(config)
+
+    class FakePage:
+        url = "https://www.instagram.com/p/TARGET123/"
+
+        def goto(self, url: str, **kwargs: Any) -> None:
+            self.url = url
+
+        def evaluate(self, script: str) -> dict[str, Any]:
+            return {
+                "final_url": self.url,
+                "page_state": {
+                    "login_wall_detected": False,
+                    "profile_unavailable_detected": False,
+                    "serialized_data_detected": True,
+                    "body_text_length": 0,
+                },
+                "extraction_sources": {
+                    "post_links": 0,
+                    "json_script_blocks": 1,
+                    "media_candidates": 1,
+                    "comment_candidates": 0,
+                    "target_media_candidates": 1,
+                    "other_media_candidates": 0,
+                },
+                "serialized_candidates": {
+                    "media": [{"status_id": "TARGET123", "author_username": "starbucks"}],
+                    "target_media": [{"status_id": "TARGET123", "author_username": "starbucks"}],
+                    "other_media": [],
+                    "comments": [],
+                },
+                "serialized_structure": {
+                    "scripts_analyzed": 1,
+                    "parse_errors": 0,
+                    "top_level_types": [{"type": "object", "count": 1}],
+                    "top_level_keys": [{"key": "require", "count": 1}],
+                    "key_paths": [],
+                    "marker_keys": [],
+                    "shape_samples": [],
+                },
+                "body_sample": "",
+            }
+
+        def close(self) -> None:
+            return None
+
+    class FakeContext:
+        def new_page(self) -> FakePage:
+            return FakePage()
+
+    class FakePlaywright:
+        def __enter__(self) -> object:
+            return object()
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            return None
+
+    monkeypatch.setattr("playwright.sync_api.sync_playwright", lambda: FakePlaywright())
+    monkeypatch.setattr(
+        collector,
+        "_open_collection_context",
+        lambda playwright: SimpleNamespace(context=FakeContext(), warnings=[], close=lambda: None),
+    )
+
+    diagnostic = collector.diagnose_browser_session("https://www.instagram.com/p/TARGET123/")
+
+    assert diagnostic["target_author_username"] == "starbucks"
+    assert any("does not match configured Instagram source nasa" in warning for warning in diagnostic["warnings"])
 
 
 def test_instagram_web_post_payload_merges_script_comment_fallback() -> None:

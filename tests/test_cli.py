@@ -46,6 +46,8 @@ paths:
                 "collector": "instagram_web",
                 "target_url": target_url,
                 "final_url": target_url,
+                "target_status_id": "",
+                "target_author_username": "",
                 "authenticated_browser_enabled": True,
                 "browser": "chrome",
                 "profile_directory": "Default",
@@ -62,8 +64,10 @@ paths:
                     "json_script_blocks": 0,
                     "media_candidates": 0,
                     "comment_candidates": 0,
+                    "target_media_candidates": 0,
+                    "other_media_candidates": 0,
                 },
-                "serialized_candidates": {"media": [], "comments": []},
+                "serialized_candidates": {"media": [], "target_media": [], "other_media": [], "comments": []},
                 "serialized_structure": {
                     "scripts_analyzed": 0,
                     "parse_errors": 0,
@@ -97,7 +101,8 @@ paths:
     payload = json.loads(diagnostic_path.read_text(encoding="utf-8"))
     assert payload["status"] == "login_wall"
     assert payload["target_url"] == "https://www.instagram.com/nasa/"
+    assert payload["target_status_id"] == ""
     assert payload["page_state"]["login_wall_detected"] is True
-    assert payload["serialized_candidates"] == {"media": [], "comments": []}
+    assert payload["serialized_candidates"] == {"media": [], "target_media": [], "other_media": [], "comments": []}
     assert payload["serialized_structure"]["scripts_analyzed"] == 0
     assert "Instagram web diagnostic written" in result.output

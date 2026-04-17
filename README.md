@@ -450,6 +450,10 @@ If the diagnostic returns `status: "content_visible"` with `body_text_length: 0`
 
 If `json_script_blocks` is greater than zero but candidate counts are `0`, check `serialized_structure`. It stores a redacted structure map: top-level JSON types/keys, frequent nested key paths, marker keys like `__typename` or `__bbox`, and small shape samples. It intentionally does not store full raw JSON values.
 
+For detail URLs such as `/p/<shortcode>/` or `/reel/<shortcode>/`, also check `target_status_id`, `extraction_sources.target_media_candidates`, and `extraction_sources.other_media_candidates`. Instagram can expose unrelated recommended media in the same page scripts; only `target_media_candidates > 0` indicates that the serialized payload appears to include the requested post itself.
+
+Also check `target_author_username` and warnings. If the target author does not match the configured Instagram source, the detail URL likely belongs to a different profile even if the shortcode resolved successfully.
+
 ## Usage
 
 Full pipeline:
