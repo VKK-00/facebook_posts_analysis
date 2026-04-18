@@ -1273,3 +1273,61 @@ Privacy/безопасность:
 - unit tests должны подтверждать, что `target_script_comments` имеют приоритет над unrelated global comments;
 - если target subtree не дал comments, `script_comments_source=global` явно показывает best-effort режим;
 - live smoke на Instagram detail URL всё ещё должен интерпретироваться вместе с `target_author_username`, потому что detail URL может принадлежать не ожидаемому profile.
+
+## Live smoke: Instagram web matching detail fixture
+
+После commit `Add Instagram target-aware comment fallback` выполнен live smoke на том же detail URL, но с правильным configured source:
+
+- target URL: `https://www.instagram.com/p/werA7gxc8Y/`;
+- configured source: `starbucks`;
+- temporary config: `%TEMP%\spa_instagram_web_doctor_starbucks_detail.yaml`;
+- browser profile: Chrome `Default`;
+- `authenticated_browser.enabled=true`;
+- `copy_profile=true`.
+
+Первый запуск временного config упал до старта браузера из-за YAML quoting:
+
+- `user_data_dir: "C:\Users\...\User Data"` нельзя писать в double quotes, потому что `\U` воспринимается как YAML escape;
+- рабочий вариант: `user_data_dir: 'C:\Users\...\User Data'`;
+- это operational issue, не ошибка extractor.
+
+Результат `doctor-instagram-web`:
+
+- run id: `doctor-detail-target-author-starbucks-1`;
+- `status=content_visible`;
+- `target_status_id=werA7gxc8Y`;
+- `target_author_username=starbucks`;
+- `login_wall_detected=false`;
+- `serialized_data_detected=true`;
+- `json_script_blocks=62`;
+- `media_candidates=10`;
+- `target_media_candidates=1`;
+- `other_media_candidates=9`;
+- `comment_candidates=15`;
+- warnings: только runtime warning о snapshot authenticated browser profile.
+
+Target media sample подтвердил, что это валидный matching fixture:
+
+- `permalink=https://www.instagram.com/p/werA7gxc8Y/`;
+- `author_username=starbucks`;
+- text sample: `Good friends. Good laughs. #ThankfulThursday #regram @a.kela`;
+- `comment_count=479`;
+- `like_count=108503`.
+
+Дополнительно выполнен прямой extractor smoke через `_extract_post_payload(...)` на этом URL.
+
+Результат extractor smoke:
+
+- `dom_comments=0`;
+- `script_comments=2`;
+- `target_script_comments=2`;
+- `all_script_comments=2`;
+- `merged_comments=2`;
+- `script_comments_source=target_media`.
+
+Вывод:
+
+- новый target-aware serialized fallback реально сработал на live detail page;
+- comments были взяты из target media path, а не из unrelated recommended media;
+- DOM path всё ещё слабый для этой страницы: body text показывает login/signup shell и больше видимых строк, но текущие DOM selectors не извлекли их как structured comments;
+- следующий реальный data-quality gap для Instagram: улучшать DOM comment extraction для login/signup shell detail pages, где текст comments видим в body, но не лежит в текущих `ul li` selectors.

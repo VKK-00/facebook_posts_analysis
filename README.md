@@ -444,6 +444,8 @@ collector:
 
 Use `SOCIAL_BROWSER_USER_DATA_DIR` for the browser user-data root, not the nested profile folder. For Chrome this is usually `C:\Users\<user>\AppData\Local\Google\Chrome\User Data`; the profile name, such as `Default` or `Profile 1`, belongs in `SOCIAL_BROWSER_PROFILE_DIRECTORY`.
 
+If you put a Windows path directly in YAML instead of an environment variable, wrap it in single quotes. For example: `user_data_dir: 'C:\Users\<user>\AppData\Local\Google\Chrome\User Data'`. Double-quoted YAML treats backslashes as escape sequences and can fail before the browser starts.
+
 If the diagnostic returns `status: "login_wall"`, the selected profile launched but Instagram still showed login/signup UI. Try a profile that is visibly logged in to Instagram, or temporarily set `instagram_web.headless: false` to validate the session in a visible browser window. Keep `copy_profile: true` when using a normal daily browser profile: it scans a temporary snapshot instead of attaching directly to the profile that Chrome may already have open.
 
 If the diagnostic returns `status: "content_visible"` with `body_text_length: 0`, check `extraction_sources.media_candidates`, `extraction_sources.comment_candidates`, and `serialized_candidates`. Those fields show whether Instagram exposed usable post/comment-like objects in serialized JSON even when the visible DOM is empty.
