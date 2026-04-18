@@ -219,3 +219,148 @@ paths:
 
     assert result.exit_code != 0
     assert "OpenClaw export requires an existing run_id" in result.output
+
+
+def test_history_run_cli_writes_parent_manifest(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    config_path = _write_history_cli_config(project_root)
+
+    class FakeHistoryBackfillService:
+        def __init__(self, config: Any, paths: Any) -> None:
+            self.paths = paths
+
+        def run(self, history_run_id: str | None = None) -> dict[str, Any]:
+            resolved = history_run_id or "hist-generated"
+            history_dir = self.paths.raw_root / "_history" / resolved
+            history_dir.mkdir(parents=True, exist_ok=True)
+            (history_dir / "manifest.json").write_text(
+                json.dumps({"history_run_id": resolved, "status": "success"}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return {"history_run_id": resolved, "status": "success", "windows": []}
+
+    monkeypatch.setattr(cli, "HistoricalBackfillService", FakeHistoryBackfillService)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["history-run", "--config", str(config_path), "--history-run-id", "hist-cli"],
+    )
+
+    assert result.exit_code == 0
+    assert (project_root / "data/raw/_history/hist-cli/manifest.json").exists()
+    assert "Historical run completed: hist-cli" in result.output
+
+
+def test_history_report_cli_writes_outputs(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    config_path = _write_history_cli_config(project_root)
+
+    class FakeHistoryAnalysisService:
+        def __init__(self, config: Any, paths: Any) -> None:
+            pass
+
+        def run(self, history_run_id: str) -> dict[str, Any]:
+            return {"history_run_id": history_run_id, "item_count": 0}
+
+    class FakeHistoryReportService:
+        def __init__(self, config: Any, paths: Any) -> None:
+            self.paths = paths
+
+        def run(self, history_run_id: str) -> list[Path]:
+            output_dir = self.paths.reports_root / "history" / history_run_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = output_dir / "history_report.md"
+            output_path.write_text("# report", encoding="utf-8")
+            return [output_path]
+
+    monkeypatch.setattr(cli, "HistoryAnalysisService", FakeHistoryAnalysisService)
+    monkeypatch.setattr(cli, "HistoryReportService", FakeHistoryReportService)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["history-report", "--config", str(config_path), "--history-run-id", "hist-cli"],
+    )
+
+    assert result.exit_code == 0
+    assert "History report files written" in result.output
+
+
+def test_openclaw_export_rejects_run_id_and_history_run_id_together(tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    config_path = _write_history_cli_config(project_root)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "openclaw-export",
+            "--config",
+            str(config_path),
+            "--run-id",
+            "run-1",
+            "--history-run-id",
+            "hist-1",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "--run-id and --history-run-id are mutually exclusive" in result.output
+
+
+def test_openclaw_export_history_run_writes_bundle(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "project"
+    config_path = _write_history_cli_config(project_root)
+
+    class FakeOpenClawExportService:
+        def __init__(self, config: Any, paths: Any) -> None:
+            self.paths = paths
+
+        def run_history(self, history_run_id: str) -> Any:
+            output_dir = self.paths.reports_root / "openclaw" / history_run_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+            bundle_path = output_dir / "bundle.json"
+            brief_path = output_dir / "brief.md"
+            bundle_path.write_text("{}", encoding="utf-8")
+            brief_path.write_text("# brief", encoding="utf-8")
+            return type("Outputs", (), {"bundle_path": bundle_path, "brief_path": brief_path})()
+
+    monkeypatch.setattr(cli, "OpenClawExportService", FakeOpenClawExportService)
+
+    result = CliRunner().invoke(
+        cli.app,
+        ["openclaw-export", "--config", str(config_path), "--history-run-id", "hist-cli"],
+    )
+
+    assert result.exit_code == 0
+    assert (project_root / "reports/openclaw/hist-cli/bundle.json").exists()
+    assert "OpenClaw bundle written" in result.output
+
+
+def _write_history_cli_config(project_root: Path) -> Path:
+    config_dir = project_root / "config"
+    config_dir.mkdir(parents=True)
+    config_path = config_dir / "project.yaml"
+    config_path.write_text(
+        """
+project_name: history-cli-test
+source:
+  platform: facebook
+  source_id: page_1
+  source_name: Example Page
+sides:
+  - side_id: side_a
+    name: Actor A
+collector:
+  mode: hybrid
+history:
+  start: "2026-01-01"
+  end: "2026-01-31"
+paths:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  review_dir: review
+  reports_dir: reports
+  database_path: data/processed/social_posts_analysis.duckdb
+""".strip(),
+        encoding="utf-8",
+    )
+    return config_path

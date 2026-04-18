@@ -171,3 +171,83 @@ def test_openclaw_export_builds_person_monitor_section(project_paths) -> None:
     }
     assert bundle["person_monitor"]["top_matched_posts"][0]["item_id"] == "post-1"
     assert bundle["person_monitor"]["top_matched_comments"][0]["item_id"] == "comment-1"
+
+
+def test_openclaw_export_builds_history_bundle(project_paths) -> None:
+    history_run_id = "hist-openclaw"
+    project_paths.processed_root.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "history_run_id": [history_run_id],
+            "created_at": ["2026-04-18T00:00:00+00:00"],
+            "platform": ["telegram"],
+            "source_kind": ["feed"],
+            "source_id": ["channel"],
+            "source_name": ["Channel"],
+            "window": ["month"],
+            "start": ["2026-01-01"],
+            "end": ["2026-02-28"],
+            "status": ["success"],
+            "child_run_ids": [["hist-openclaw__202601", "hist-openclaw__202602"]],
+            "warning_count": [0],
+            "warnings": [[]],
+        }
+    ).write_parquet(project_paths.processed_root / "history_runs.parquet")
+    pl.DataFrame(
+        {
+            "history_run_id": [history_run_id, history_run_id],
+            "window_id": ["202601", "202602"],
+            "child_run_id": ["hist-openclaw__202601", "hist-openclaw__202602"],
+            "start": ["2026-01-01", "2026-02-01"],
+            "end": ["2026-01-31", "2026-02-28"],
+            "status": ["success", "success"],
+            "post_count": [2, 3],
+            "comment_count": [5, 8],
+            "propagation_count": [0, 0],
+            "match_hit_count": [0, 0],
+            "warning_count": [0, 0],
+            "coverage_gap_total": [0, 1],
+            "warnings": [[], []],
+        }
+    ).write_parquet(project_paths.processed_root / "history_windows.parquet")
+    pl.DataFrame(
+        {
+            "history_run_id": [history_run_id],
+            "window_id": ["202602"],
+            "item_type": ["comment"],
+            "cluster_id": ["comment-0"],
+            "side_id": ["side_a"],
+            "metric_kind": ["stance"],
+            "item_count": [8],
+            "support_count": [1],
+            "oppose_count": [4],
+            "neutral_count": [2],
+            "unclear_count": [1],
+            "support_ratio": [0.125],
+            "net_support": [-3],
+            "engagement_total": [12],
+        }
+    ).write_parquet(project_paths.processed_root / "history_temporal_metrics.parquet")
+    pl.DataFrame(
+        {
+            "history_run_id": [history_run_id],
+            "window_id": ["202602"],
+            "child_run_id": ["hist-openclaw__202602"],
+            "item_type": ["post"],
+            "item_id": ["p1"],
+            "visible_comment_count": [10],
+            "extracted_comment_count": [6],
+            "comment_gap": [4],
+            "permalink": ["https://t.me/channel/1"],
+        }
+    ).write_parquet(project_paths.processed_root / "history_coverage_gaps.parquet")
+
+    outputs = OpenClawExportService(config=None, project_paths=project_paths).run_history(history_run_id=history_run_id)
+
+    bundle = json.loads(outputs.bundle_path.read_text(encoding="utf-8"))
+    assert bundle["schema_version"] == "openclaw.social_posts_analysis.history.v1"
+    assert bundle["history_run_id"] == history_run_id
+    assert bundle["counts"]["windows"] == 2
+    assert bundle["counts"]["posts"] == 5
+    assert bundle["history"]["windows"][1]["coverage_gap_total"] == 1
+    assert bundle["history"]["top_stance_shifts"][0]["window_id"] == "202602"

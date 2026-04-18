@@ -9,6 +9,7 @@ import typer
 from .analysis.service import AnalysisService
 from .collectors.instagram_web import InstagramWebCollector
 from .config import ProjectConfig, load_config
+from .history import HistoricalBackfillService, HistoryAnalysisService, HistoryReportService
 from .normalize import NormalizationService
 from .openclaw import OpenClawExportService
 from .paths import ProjectPaths, project_root_for_config, relative_output_paths_warning
@@ -123,16 +124,44 @@ def export_tables(
 def openclaw_export(
     config_path: Path = typer.Option(Path("config/project.yaml"), "--config", exists=True, readable=True),
     run_id: Optional[str] = typer.Option(None, "--run-id"),
+    history_run_id: Optional[str] = typer.Option(None, "--history-run-id"),
 ) -> None:
+    if run_id and history_run_id:
+        typer.echo("--run-id and --history-run-id are mutually exclusive.", err=True)
+        raise typer.Exit(1)
     _, paths, config = _load_project(config_path)
     service = OpenClawExportService(config=config, paths=paths)
     try:
-        outputs = service.run(run_id=run_id)
+        outputs = service.run_history(history_run_id=history_run_id) if history_run_id else service.run(run_id=run_id)
     except RuntimeError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
     typer.echo(f"OpenClaw bundle written: {outputs.bundle_path}")
     typer.echo(f"OpenClaw brief written: {outputs.brief_path}")
+
+
+@app.command("history-run")
+def history_run(
+    config_path: Path = typer.Option(Path("config/project.yaml"), "--config", exists=True, readable=True),
+    history_run_id: Optional[str] = typer.Option(None, "--history-run-id"),
+) -> None:
+    _, paths, config = _load_project(config_path)
+    service = HistoricalBackfillService(config=config, paths=paths)
+    summary = service.run(history_run_id=history_run_id)
+    typer.echo(f"Historical run completed: {summary['history_run_id']}")
+    typer.echo(f"Historical run status: {summary['status']}")
+
+
+@app.command("history-report")
+def history_report(
+    config_path: Path = typer.Option(Path("config/project.yaml"), "--config", exists=True, readable=True),
+    history_run_id: str = typer.Option(..., "--history-run-id"),
+) -> None:
+    _, paths, config = _load_project(config_path)
+    HistoryAnalysisService(config=config, paths=paths).run(history_run_id=history_run_id)
+    service = HistoryReportService(config=config, paths=paths)
+    outputs = service.run(history_run_id=history_run_id)
+    typer.echo(f"History report files written: {', '.join(str(path) for path in outputs)}")
 
 
 @app.command("run-all")

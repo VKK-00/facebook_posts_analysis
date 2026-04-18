@@ -1082,6 +1082,153 @@ def test_telegram_mtproto_discussion_scan_limit_grows_with_expected_comment_coun
     assert calls[1] == {"limit": 480, "reply_to": None}
 
 
+def test_telegram_mtproto_history_source_messages_use_window_limit_and_date_range() -> None:
+    config = _telegram_config()
+    config.date_range.start = "2026-01-01"
+    config.date_range.end = "2026-01-31"
+    config.history.active = True
+    config.history.max_items_per_window = 3
+    config.collector.telegram_mtproto.page_size = 1
+    collector = TelegramMtprotoCollector(config)
+    source_entity = FakeChat(id=1001, title="Example Channel")
+    calls: list[dict[str, Any]] = []
+
+    class FakeClient:
+        def iter_messages(self, source, limit=None, offset_date=None, reverse=None):  # noqa: ANN001, ANN002, ANN003, ANN202
+            calls.append({"limit": limit, "offset_date": offset_date, "reverse": reverse})
+            return [
+                FakeMessage(id=1, date=datetime(2026, 1, 31, 10, 0, tzinfo=UTC), message="In range 1"),
+                FakeMessage(id=2, date=datetime(2026, 1, 5, 10, 0, tzinfo=UTC), message="In range 2"),
+                FakeMessage(id=3, date=datetime(2025, 12, 31, 23, 0, tzinfo=UTC), message="Too old"),
+            ]
+
+    messages = collector._iter_source_messages(FakeClient(), source_entity)
+
+    assert calls[0]["limit"] == 3
+    assert calls[0]["reverse"] is False
+    assert [message.id for message in messages] == [1, 2]
+
+
+def test_telegram_mtproto_history_discussion_limit_and_gap_warning(tmp_path: Path, monkeypatch) -> None:
+    config = _telegram_config()
+    config.history.active = True
+    config.history.max_comments_per_post = 2
+    collector = TelegramMtprotoCollector(config)
+    source_entity = FakeChat(id=1001, title="Example Channel", username="example_channel")
+    discussion_entity = FakeChat(id=2002, title="Example Discussion")
+    post_message = FakeMessage(
+        id=7,
+        date=datetime(2026, 4, 1, 10, 0, tzinfo=UTC),
+        message="Channel post",
+        replies=FakeReplies(replies=5),
+    )
+    parent_comment = FakeMessage(
+        id=71,
+        date=datetime(2026, 4, 1, 10, 5, tzinfo=UTC),
+        message="Top-level reply",
+        sender=FakeSender(id=501, first_name="Alice"),
+        reply_to=FakeReplyTo(reply_to_msg_id=700),
+    )
+    nested_reply = FakeMessage(
+        id=72,
+        date=datetime(2026, 4, 1, 10, 6, tzinfo=UTC),
+        message="Nested reply",
+        sender=FakeSender(id=502, first_name="Bob"),
+        reply_to=FakeReplyTo(reply_to_msg_id=71, reply_to_top_id=700),
+    )
+    third_reply = FakeMessage(
+        id=73,
+        date=datetime(2026, 4, 1, 10, 7, tzinfo=UTC),
+        message="Third reply beyond history limit",
+        sender=FakeSender(id=503, first_name="Cara"),
+        reply_to=FakeReplyTo(reply_to_msg_id=700),
+    )
+
+    class FakeClient:
+        def disconnect(self) -> None:
+            return None
+
+        def iter_messages(self, chat, limit=None, reply_to=None, offset_date=None, reverse=None):  # noqa: ANN001, ANN002, ANN003, ANN202
+            if reply_to == 700:
+                return [parent_comment, nested_reply, third_reply][: limit or 3]
+            return [parent_comment, nested_reply, third_reply]
+
+    monkeypatch.setattr(collector, "_open_client", lambda: FakeClient())
+    monkeypatch.setattr(collector, "_resolve_source_entity", lambda client: source_entity)
+    monkeypatch.setattr(collector, "_resolve_discussion_entity", lambda client, source: discussion_entity)
+    monkeypatch.setattr(collector, "_iter_source_messages", lambda client, source: [post_message])
+    monkeypatch.setattr(
+        collector,
+        "_fetch_discussion_context",
+        lambda client, source, message: DiscussionContext(
+            chat=discussion_entity,
+            root_message_id=700,
+            expected_comment_count=5,
+        ),
+    )
+
+    manifest = collector.collect("tg-history-comments", RawSnapshotStore(tmp_path / "raw"))
+
+    assert len(manifest.posts[0].comments) == 2
+    assert manifest.posts[0].comments[1].parent_comment_id == manifest.posts[0].comments[0].comment_id
+    assert any("visible=5, extracted=2" in warning for warning in manifest.warnings)
+
+
+def test_telegram_mtproto_history_reaches_item_limit_warning(tmp_path: Path, monkeypatch) -> None:
+    config = _telegram_config()
+    config.history.active = True
+    config.history.max_items_per_window = 2
+    collector = TelegramMtprotoCollector(config)
+    source_entity = FakeChat(id=1001, title="Example Channel", username="example_channel")
+    fake_client = SimpleNamespace(disconnect=lambda: None)
+
+    monkeypatch.setattr(collector, "_open_client", lambda: fake_client)
+    monkeypatch.setattr(collector, "_resolve_source_entity", lambda client: source_entity)
+    monkeypatch.setattr(collector, "_resolve_discussion_entity", lambda client, source: None)
+    monkeypatch.setattr(
+        collector,
+        "_iter_source_messages",
+        lambda client, source: [
+            FakeMessage(id=7, date=datetime(2026, 4, 1, 10, 0, tzinfo=UTC), message="First"),
+            FakeMessage(id=8, date=datetime(2026, 4, 1, 11, 0, tzinfo=UTC), message="Second"),
+        ],
+    )
+
+    manifest = collector.collect("tg-history-limit", RawSnapshotStore(tmp_path / "raw"))
+
+    assert any("history.max_items_per_window=2" in warning for warning in manifest.warnings)
+
+
+def test_telegram_mtproto_oldest_source_datetime_uses_oldest_non_service_message(monkeypatch) -> None:
+    collector = TelegramMtprotoCollector(_telegram_config())
+    source_entity = FakeChat(id=1001, title="Example Channel")
+    service_message = FakeMessage(
+        id=1,
+        date=datetime(2020, 1, 1, 10, 0, tzinfo=UTC),
+        action="join",
+    )
+    oldest_message = FakeMessage(
+        id=2,
+        date=datetime(2020, 1, 2, 10, 0, tzinfo=UTC),
+        message="Oldest visible post",
+    )
+
+    class FakeClient:
+        def disconnect(self) -> None:
+            return None
+
+        def iter_messages(self, source, limit=None, reverse=None):  # noqa: ANN001, ANN002, ANN003, ANN202
+            assert source == source_entity
+            assert limit == 25
+            assert reverse is True
+            return [service_message, oldest_message]
+
+    monkeypatch.setattr(collector, "_open_client", lambda: FakeClient())
+    monkeypatch.setattr(collector, "_resolve_source_entity", lambda client: source_entity)
+
+    assert collector.oldest_source_datetime() == "2020-01-02T10:00:00+00:00"
+
+
 def test_telegram_mtproto_collect_reorders_discussion_messages_to_preserve_parent_chain(
     tmp_path: Path,
     monkeypatch,

@@ -96,6 +96,12 @@ class TelegramMtprotoCollector(BaseCollector):
                             raw_store=raw_store,
                         )
                         filtered_service_message_count += skipped_service_messages
+                        if discussion_context.expected_comment_count > len(comment_snapshots):
+                            warnings.append(
+                                "Telegram discussion comments incomplete for "
+                                f"{post_snapshot.post_id}: visible={discussion_context.expected_comment_count}, "
+                                f"extracted={len(comment_snapshots)}."
+                            )
                         post_snapshot = post_snapshot.model_copy(
                             update={
                                 "comments": comment_snapshots,
@@ -103,6 +109,12 @@ class TelegramMtprotoCollector(BaseCollector):
                             }
                         )
                 posts.append(post_snapshot)
+            if self.config.history.active and len(posts) >= self.config.history.max_items_per_window:
+                warnings.append(
+                    "Telegram history window reached "
+                    f"history.max_items_per_window={self.config.history.max_items_per_window}; "
+                    "older or remaining messages may be truncated."
+                )
         finally:
             disconnect = getattr(client, "disconnect", None)
             if callable(disconnect):
@@ -186,6 +198,21 @@ class TelegramMtprotoCollector(BaseCollector):
                 "Telegram MTProto session is not authorized. Log in once with the configured session file."
             )
         return client
+
+    def oldest_source_datetime(self) -> str | None:
+        client = self._open_client()
+        try:
+            source_entity = self._resolve_source_entity(client)
+            messages = list(client.iter_messages(source_entity, limit=25, reverse=True))
+            for message in messages:
+                if self._is_service_message(message):
+                    continue
+                return self._iso_datetime(self._message_datetime(message))
+            return None
+        finally:
+            disconnect = getattr(client, "disconnect", None)
+            if callable(disconnect):
+                disconnect()
 
     def _iter_person_monitor_search_messages(
         self,
@@ -291,7 +318,7 @@ class TelegramMtprotoCollector(BaseCollector):
         messages = list(
             client.iter_messages(
                 source_entity,
-                limit=self.settings.page_size,
+                limit=self._source_message_limit(),
                 offset_date=self._end_datetime(),
                 reverse=reverse,
             )
@@ -370,15 +397,15 @@ class TelegramMtprotoCollector(BaseCollector):
         direct_messages = list(
             client.iter_messages(
                 discussion_context.chat,
-                limit=self.settings.page_size,
+                limit=self._discussion_direct_limit(),
                 reply_to=discussion_context.root_message_id,
                 reverse=True,
             )
         )
         messages_by_id = {self._message_id(message): message for message in direct_messages}
         scan_limit = max(
-            self.settings.page_size * 3,
-            min(max(discussion_context.expected_comment_count * 2, 0), 1000),
+            self._discussion_direct_limit() * 3,
+            min(max(discussion_context.expected_comment_count * 2, 0), self._discussion_scan_cap()),
             100,
         )
         broad_messages = list(
@@ -395,13 +422,31 @@ class TelegramMtprotoCollector(BaseCollector):
                 continue
             if self._belongs_to_discussion_thread(message, discussion_context.root_message_id):
                 messages_by_id[message_id] = message
-        return sorted(
+        ordered = sorted(
             messages_by_id.values(),
             key=lambda item: (
                 self._message_datetime(item) or datetime.min.replace(tzinfo=UTC),
                 self._message_id(item),
             ),
         )
+        if self.config.history.active:
+            return ordered[: self.config.history.max_comments_per_post]
+        return ordered
+
+    def _source_message_limit(self) -> int:
+        if self.config.history.active:
+            return max(1, self.config.history.max_items_per_window)
+        return self.settings.page_size
+
+    def _discussion_direct_limit(self) -> int:
+        if self.config.history.active:
+            return max(1, min(self.config.history.max_comments_per_post, self.settings.page_size))
+        return self.settings.page_size
+
+    def _discussion_scan_cap(self) -> int:
+        if self.config.history.active:
+            return max(1, self.config.history.max_comments_per_post)
+        return 1000
 
     def _order_discussion_messages(
         self,

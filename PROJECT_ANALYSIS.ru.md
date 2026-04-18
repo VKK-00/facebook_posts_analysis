@@ -1464,3 +1464,114 @@ Manual smoke:
 - команда `openclaw-export` успешно создала `bundle.json` и `brief.md`;
 - bundle показал `schema_version=openclaw.social_posts_analysis.v1`, `platform=facebook`, `source_kind=feed`, `collector=public_web`, `status=partial`;
 - counts из smoke: `posts=1`, `comments=1`, `propagations=0`, `match_hits=0`, `observed_sources=0`, `warnings=3`.
+## Обновление: Historical Profile Intelligence v1
+
+Добавлен первый слой исторического анализа профиля или источника. Цель этого слоя: не просто собрать один snapshot, а пройти историю по месячным окнам и затем увидеть, как менялись темы, позиции и реакция аудитории.
+
+Главные решения:
+
+- v1 поддерживает оба режима источника: `feed` и `person_monitor`;
+- первый production-quality historical collector target: `telegram_mtproto`;
+- окно анализа фиксировано как месяц: `history.window: month`;
+- текущие snapshot tables не переопределяются и не меняют смысл;
+- исторические результаты живут в отдельных таблицах `history_*`;
+- `run-all` не меняется, чтобы старый pipeline не получил скрытое новое поведение.
+
+Новые config-поля:
+
+```yaml
+history:
+  start: null
+  end: null
+  window: month
+  max_windows: 240
+  max_items_per_window: 5000
+  max_comments_per_post: 5000
+  resume: true
+  stop_on_error: false
+```
+
+Как это работает end to end:
+
+1. CLI `history-run` загружает config через обычный `_load_project(...)`.
+2. `HistoricalBackfillService` строит месячные окна от `history.start` до `history.end`.
+3. Для каждого окна создаётся child run id вида `<history_run_id>__YYYYMM`.
+4. Для child run временно выставляется `date_range.start/end` и `history.active=true`.
+5. Запускается существующий `CollectionService`, затем существующий `NormalizationService`.
+6. Parent manifest пишется в `data/raw/_history/<history_run_id>/manifest.json`.
+7. Parent metadata и месячные статусы пишутся в `history_runs.parquet` и `history_windows.parquet`.
+8. CLI `history-report` запускает `HistoryAnalysisService`, затем `HistoryReportService`.
+9. OpenClaw получает отдельный history bundle через `openclaw-export --history-run-id`.
+
+Новые файлы и зоны:
+
+- [src/social_posts_analysis/history.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\history.py)
+  Новый orchestration, analysis и reporting слой для history mode.
+- [src/social_posts_analysis/cli.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\cli.py)
+  Добавлены команды `history-run`, `history-report`; `openclaw-export` теперь принимает `--history-run-id`.
+- [src/social_posts_analysis/openclaw.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\openclaw.py)
+  Добавлен `run_history(...)` и schema version `openclaw.social_posts_analysis.history.v1`.
+- [src/social_posts_analysis/collectors/telegram_mtproto.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\collectors\telegram_mtproto.py)
+  Добавлен history-aware лимит source messages, discovery самого старого сообщения и warnings по неполной discussion extraction.
+- [src/social_posts_analysis/normalization/schemas.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\normalization\schemas.py)
+  Добавлены schemas и keys для `history_*` таблиц.
+- [src/social_posts_analysis/config_models.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\config_models.py)
+  Добавлен `HistoryConfig`.
+
+Новые normalized tables:
+
+- `history_runs`: parent metadata, source, platform, source_kind, window grain, start/end, status, child run ids.
+- `history_windows`: один ряд на месяц, child run id, counts, status, warnings, coverage gap total.
+- `history_item_index`: historical item index по posts/comments/propagations.
+- `history_narrative_clusters`: глобальные clusters по всей истории.
+- `history_cluster_memberships`: связь item -> global cluster.
+- `history_stance_labels`: stance labels для historical items.
+- `history_temporal_metrics`: monthly volume, stance, support, engagement и person_monitor metrics.
+- `history_coverage_gaps`: visible-vs-extracted comment gaps по месяцам.
+
+Почему выбран такой подход:
+
+- monthly child runs используют уже проверенный collection + normalization path, поэтому не создаётся второй параллельный raw/normalized pipeline;
+- child run id `<history_run_id>__YYYYMM` делает resume и отладку простыми;
+- отдельные `history_*` таблицы уменьшают риск поломать существующие snapshot reports;
+- global narrative clustering по всей истории даёт стабильные cluster ids между месяцами;
+- `telegram_mtproto` выбран первым, потому что он реально может идти вглубь истории через MTProto, в отличие от большинства public web DOM surfaces.
+
+Ограничения v1:
+
+- web collectors могут участвовать только как degraded/best-effort history surfaces;
+- для web collectors `history.start` нужно задавать явно, потому что deep-history extraction пока нестабилен;
+- `history.start: null` полноценно поддержан только для `telegram_mtproto`;
+- Telegram discussion comments собираются best-effort и ограничены `history.max_comments_per_post`;
+- если видимый reply/comment count больше extracted comments, это фиксируется как coverage gap, а не скрывается;
+- fuzzy entity matching и cross-platform identity resolution в этот batch не входят.
+
+Команды:
+
+```powershell
+social-posts-analysis history-run --config config/project.local.yaml --history-run-id <history_run_id>
+social-posts-analysis history-report --config config/project.local.yaml --history-run-id <history_run_id>
+social-posts-analysis openclaw-export --config config/project.local.yaml --history-run-id <history_run_id>
+```
+
+Выходные файлы:
+
+- `data/raw/_history/<history_run_id>/manifest.json`;
+- `reports/history/<history_run_id>/history_report.md`;
+- `reports/history/<history_run_id>/history_report.html`;
+- `reports/history/<history_run_id>/tables/*.csv`;
+- `reports/openclaw/<history_run_id>/bundle.json`;
+- `reports/openclaw/<history_run_id>/brief.md`.
+
+Проверка:
+
+- unit tests покрывают monthly window builder, null start discovery для Telegram MTProto, required start для non-Telegram history, `max_windows`, resume, failed windows, temporal tables, person_monitor authored/mention split, history report и OpenClaw history bundle;
+- collector tests покрывают Telegram MTProto history source-message limit, date-range filtering, discussion comment cap, visible-vs-extracted warning, item-limit warning и oldest-message discovery;
+- CLI tests покрывают `history-run`, `history-report`, `openclaw-export --history-run-id` и взаимоисключение `--run-id`/`--history-run-id`.
+
+Следующий логичный batch:
+
+- live smoke на Telegram MTProto public channel за 2-3 месяца;
+- добавить reusable smoke config для короткого history run;
+- добавить coverage_score поверх `history_windows` и `history_coverage_gaps`;
+- после Telegram smoke решать, какие web surfaces можно честно включить как limited history collectors.

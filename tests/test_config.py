@@ -49,6 +49,44 @@ def test_project_config_accepts_authenticated_browser_settings() -> None:
     assert config.normalization.merge_recent_runs == 3
 
 
+def test_project_config_rejects_public_history_active_flag() -> None:
+    with pytest.raises(ValueError):
+        ProjectConfig.model_validate(
+            {
+                "source": {
+                    "platform": "facebook",
+                    "url": "https://www.facebook.com/example",
+                },
+                "sides": [{"side_id": "a", "name": "A"}],
+                "history": {"active": True},
+                "collector": {
+                    "mode": "web",
+                    "public_web": {"enabled": True},
+                    "meta_api": {"enabled": False},
+                },
+            }
+        )
+
+
+def test_project_config_rejects_non_positive_history_limits() -> None:
+    with pytest.raises(ValueError):
+        ProjectConfig.model_validate(
+            {
+                "source": {
+                    "platform": "facebook",
+                    "url": "https://www.facebook.com/example",
+                },
+                "sides": [{"side_id": "a", "name": "A"}],
+                "history": {"max_windows": 0},
+                "collector": {
+                    "mode": "web",
+                    "public_web": {"enabled": True},
+                    "meta_api": {"enabled": False},
+                },
+            }
+        )
+
+
 def test_project_config_requires_telegram_credentials_for_mtproto() -> None:
     with pytest.raises(ValueError):
         ProjectConfig.model_validate(

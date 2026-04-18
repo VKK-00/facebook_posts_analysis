@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
 from .config_env import env_int, env_value
 from .config_validation import validate_project_config, validate_source_reference
@@ -15,6 +15,29 @@ class DateRangeConfig(BaseModel):
 
     start: str | None = None
     end: str | None = None
+
+
+class HistoryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    _active: bool = PrivateAttr(default=False)
+
+    start: str | None = None
+    end: str | None = None
+    window: Literal["month"] = "month"
+    max_windows: int = Field(default=240, gt=0)
+    max_items_per_window: int = Field(default=5000, gt=0)
+    max_comments_per_post: int = Field(default=5000, gt=0)
+    resume: bool = True
+    stop_on_error: bool = False
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    @active.setter
+    def active(self, value: bool) -> None:
+        self._active = bool(value)
 
 
 class TelegramSourceConfig(BaseModel):
@@ -313,6 +336,7 @@ class ProjectConfig(BaseModel):
     sides: list[SideConfig] = Field(default_factory=list)
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
     normalization: NormalizationConfig = Field(default_factory=NormalizationConfig)
+    history: HistoryConfig = Field(default_factory=HistoryConfig)
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     paths: PathsConfig = Field(default_factory=PathsConfig)
 

@@ -14,6 +14,7 @@ from .paths import ProjectPaths
 from .utils import read_json, utc_now_iso
 
 SCHEMA_VERSION = "openclaw.social_posts_analysis.v1"
+HISTORY_SCHEMA_VERSION = "openclaw.social_posts_analysis.history.v1"
 
 
 @dataclass(slots=True)
@@ -124,6 +125,64 @@ class OpenClawExportService:
         brief_path.write_text(self._brief_markdown(bundle), encoding="utf-8")
         return OpenClawExportOutputs(bundle_path=bundle_path, brief_path=brief_path)
 
+    def run_history(self, history_run_id: str) -> OpenClawExportOutputs:
+        history_runs = self._load_history_table("history_runs", history_run_id)
+        if history_runs.is_empty():
+            raise RuntimeError(f"OpenClaw history export requires an existing history_run_id '{history_run_id}'.")
+
+        windows = self._load_history_table("history_windows", history_run_id)
+        temporal_metrics = self._load_history_table("history_temporal_metrics", history_run_id)
+        coverage_gaps = self._load_history_table("history_coverage_gaps", history_run_id)
+        clusters = self._load_history_table("history_narrative_clusters", history_run_id)
+        run_row = history_runs.to_dicts()[0]
+        output_dir = self.paths.reports_root / "openclaw" / history_run_id
+        bundle_path = output_dir / "bundle.json"
+        brief_path = output_dir / "brief.md"
+
+        counts = {
+            "windows": windows.height,
+            "posts": int(windows["post_count"].sum()) if "post_count" in windows.columns and windows.height else 0,
+            "comments": int(windows["comment_count"].sum()) if "comment_count" in windows.columns and windows.height else 0,
+            "propagations": int(windows["propagation_count"].sum()) if "propagation_count" in windows.columns and windows.height else 0,
+            "match_hits": int(windows["match_hit_count"].sum()) if "match_hit_count" in windows.columns and windows.height else 0,
+            "coverage_gaps": coverage_gaps.height,
+            "warnings": int(windows["warning_count"].sum()) if "warning_count" in windows.columns and windows.height else 0,
+            "narrative_clusters": clusters.height,
+        }
+        bundle = {
+            "schema_version": HISTORY_SCHEMA_VERSION,
+            "history_run_id": history_run_id,
+            "created_at": utc_now_iso(),
+            "project_name": self.config.project_name if self.config else "",
+            "platform": run_row.get("platform"),
+            "source_kind": run_row.get("source_kind"),
+            "source": {
+                "platform": run_row.get("platform"),
+                "source_kind": run_row.get("source_kind"),
+                "source_id": run_row.get("source_id"),
+                "source_name": run_row.get("source_name"),
+            },
+            "status": run_row.get("status"),
+            "counts": counts,
+            "artifacts": self._build_history_artifacts(history_run_id, bundle_path, brief_path),
+            "history": {
+                "start": run_row.get("start"),
+                "end": run_row.get("end"),
+                "window": run_row.get("window"),
+                "windows": _frame_records(windows, limit=120),
+                "temporal_metrics": _frame_records(temporal_metrics, limit=200),
+                "coverage_gaps": _frame_records(coverage_gaps, limit=100),
+                "top_stance_shifts": self._top_history_stance_shifts(temporal_metrics),
+                "top_narratives": _frame_records(clusters, limit=50),
+            },
+            "next_actions": self._history_next_actions(run_row, windows, coverage_gaps),
+        }
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        bundle_path.write_text(json.dumps(_json_safe(bundle), ensure_ascii=False, indent=2), encoding="utf-8")
+        brief_path.write_text(self._history_brief_markdown(bundle), encoding="utf-8")
+        return OpenClawExportOutputs(bundle_path=bundle_path, brief_path=brief_path)
+
     def _load_table(self, table_name: str, run_id: str) -> pl.DataFrame:
         table_path = self.paths.processed_root / f"{table_name}.parquet"
         if not table_path.exists():
@@ -132,6 +191,15 @@ class OpenClawExportService:
         if "run_id" in frame.columns:
             return frame.filter(pl.col("run_id") == run_id)
         return frame
+
+    def _load_history_table(self, table_name: str, history_run_id: str) -> pl.DataFrame:
+        table_path = self.paths.processed_root / f"{table_name}.parquet"
+        if not table_path.exists():
+            return pl.DataFrame()
+        frame = pl.read_parquet(table_path)
+        if "history_run_id" in frame.columns:
+            return frame.filter(pl.col("history_run_id") == history_run_id)
+        return pl.DataFrame()
 
     def _first_row(self, frame: pl.DataFrame) -> dict[str, Any] | None:
         if frame.is_empty():
@@ -466,6 +534,71 @@ class OpenClawExportService:
             lines.append("- None")
         lines.extend(["", "## Next Actions"])
         lines.extend(f"- {action}" for action in next_actions)
+        lines.append("")
+        return "\n".join(lines)
+
+    def _build_history_artifacts(self, history_run_id: str, bundle_path: Path, brief_path: Path) -> dict[str, Any]:
+        history_manifest = self.paths.raw_root / "_history" / history_run_id / "manifest.json"
+        report_dir = self.paths.reports_root / "history" / history_run_id
+        report_markdown = report_dir / "history_report.md"
+        report_html = report_dir / "history_report.html"
+        tables_dir = report_dir / "tables"
+        csv_exports: dict[str, str] = {}
+        if tables_dir.exists():
+            csv_exports = {path.stem: self._path_string(path) for path in sorted(tables_dir.glob("*.csv"))}
+        return {
+            "history_manifest": self._path_string(history_manifest) if history_manifest.exists() else None,
+            "processed_dir": self._path_string(self.paths.processed_root),
+            "duckdb": self._path_string(self.paths.database_path),
+            "history_report_markdown": self._path_string(report_markdown) if report_markdown.exists() else None,
+            "history_report_html": self._path_string(report_html) if report_html.exists() else None,
+            "history_tabular_dir": self._path_string(tables_dir) if tables_dir.exists() else None,
+            "csv_exports": csv_exports,
+            "openclaw_bundle": self._path_string(bundle_path),
+            "openclaw_brief": self._path_string(brief_path),
+        }
+
+    def _top_history_stance_shifts(self, temporal_metrics: pl.DataFrame) -> list[dict[str, Any]]:
+        if temporal_metrics.is_empty() or "metric_kind" not in temporal_metrics.columns:
+            return []
+        stance = temporal_metrics.filter(pl.col("metric_kind") == "stance")
+        if stance.is_empty() or "net_support" not in stance.columns:
+            return []
+        return _frame_records(stance.sort("net_support").head(20), limit=20)
+
+    def _history_next_actions(
+        self,
+        run_row: dict[str, Any],
+        windows: pl.DataFrame,
+        coverage_gaps: pl.DataFrame,
+    ) -> list[str]:
+        actions: list[str] = []
+        if run_row.get("status") != "success":
+            actions.append("Treat this historical run as partial until failed or partial windows are reviewed.")
+        if not windows.is_empty() and "status" in windows.columns and windows.filter(pl.col("status") == "failed").height:
+            actions.append("Rerun failed monthly windows with history.resume=true after fixing collector errors.")
+        if not coverage_gaps.is_empty():
+            actions.append("Inspect months with visible-vs-extracted comment gaps before making completeness claims.")
+        if not actions:
+            actions.append("Historical bundle is ready for OpenClaw review.")
+        return actions
+
+    def _history_brief_markdown(self, bundle: dict[str, Any]) -> str:
+        counts = bundle["counts"]
+        lines = [
+            f"# OpenClaw History Brief: {bundle['history_run_id']}",
+            "",
+            f"- Status: {bundle['status']}",
+            f"- Source: {bundle['platform']} / {bundle['source_kind']} / {bundle['source'].get('source_name')}",
+            (
+                "- Counts: "
+                f"windows={counts['windows']}, posts={counts['posts']}, comments={counts['comments']}, "
+                f"coverage_gaps={counts['coverage_gaps']}, warnings={counts['warnings']}"
+            ),
+            "",
+            "## Next Actions",
+        ]
+        lines.extend(f"- {action}" for action in bundle["next_actions"])
         lines.append("")
         return "\n".join(lines)
 

@@ -32,6 +32,7 @@ Support is intentionally tiered. The project does not claim equal coverage acros
 - exports review files for manual corrections
 - renders Markdown, HTML, CSV, and XLSX reports
 - exports a stable OpenClaw JSON bundle for agent or chatbot handoff through local files
+- runs monthly historical backfills for a profile/source and builds timeline, narrative, stance, and audience-comment trend tables
 
 ## Project Layout
 
@@ -111,6 +112,9 @@ Important top-level settings:
 - `collector.wait_between_passes_seconds`
 - `normalization.merge_recent_runs`
 - `normalization.source_run_ids`
+- `history.start`, `history.end`, `history.window`
+- `history.max_windows`, `history.max_items_per_window`, `history.max_comments_per_post`
+- `history.resume`, `history.stop_on_error`
 - `sides`
 - `providers.embeddings`
 - `providers.llm`
@@ -483,6 +487,42 @@ social-posts-analysis export-tables --config config/project.local.yaml --run-id 
 social-posts-analysis openclaw-export --config config/project.local.yaml --run-id <run_id>
 ```
 
+Historical monthly backfill:
+
+```bash
+social-posts-analysis history-run --config config/project.local.yaml --history-run-id <history_run_id>
+social-posts-analysis history-report --config config/project.local.yaml --history-run-id <history_run_id>
+social-posts-analysis openclaw-export --config config/project.local.yaml --history-run-id <history_run_id>
+```
+
+### Historical Profile Intelligence
+
+`history-run` creates monthly child runs with ids in the form `<history_run_id>__YYYYMM`. Each child run uses the existing collect and normalize path with a temporary monthly `date_range.start` and `date_range.end`. The parent history manifest is written to `data/raw/_history/<history_run_id>/manifest.json`.
+
+Example config:
+
+```yaml
+history:
+  start: "2026-01-01"
+  end: null
+  window: month
+  max_windows: 240
+  max_items_per_window: 5000
+  max_comments_per_post: 5000
+  resume: true
+  stop_on_error: false
+```
+
+In v1, the production-quality historical collector target is `telegram_mtproto`. For Telegram MTProto, `history.start: null` means the collector tries to discover the oldest accessible source message and starts from that month. For web collectors, set `history.start` explicitly; if it is missing, `history-run` fails before collection because deep web history is not stable yet.
+
+`history-report` runs the historical analysis step and writes:
+
+- `reports/history/<history_run_id>/history_report.md`
+- `reports/history/<history_run_id>/history_report.html`
+- `reports/history/<history_run_id>/tables/*.csv`
+
+The historical tables are separate from the current snapshot tables. Existing `posts`, `comments`, `propagations`, `match_hits`, and `observed_sources` semantics are not changed.
+
 ### OpenClaw File Export
 
 `openclaw-export` is a read-only integration layer. It does not collect, normalize, analyze, or rerun the pipeline. It reads an existing run from `data/raw/<run_id>/`, optional parquet/DuckDB tables under `data/processed/`, and optional report exports under `reports/`.
@@ -498,6 +538,14 @@ Outputs:
 
 The JSON bundle uses schema version `openclaw.social_posts_analysis.v1` and includes run metadata, source/platform/collector status, local artifact paths, counts, warnings with `source_run_id` when available, person-monitor `observed_sources` and `match_hits` summaries, coverage gaps, and deterministic next actions.
 
+For historical runs, use:
+
+```powershell
+social-posts-analysis openclaw-export --config config/project.local.yaml --history-run-id <history_run_id>
+```
+
+Historical bundles use schema version `openclaw.social_posts_analysis.history.v1` and include monthly windows, temporal metrics, narrative clusters, stance shifts, coverage gaps, report paths, and deterministic next actions. `--run-id` and `--history-run-id` are mutually exclusive.
+
 This v1 contract is intentionally `CLI + files`. It does not start an HTTP server, webhook listener, MCP server, browser session, or Claude/OpenClaw API call. OpenClaw can run the CLI as a local process and then read `bundle.json` without knowing the internal repository layout.
 
 ## CLI Commands
@@ -512,6 +560,8 @@ The package exposes the `social-posts-analysis` CLI with:
 - `export-tables`
 - `openclaw-export`
 - `doctor-instagram-web`
+- `history-run`
+- `history-report`
 - `run-all`
 - `run-many`
 
@@ -539,6 +589,17 @@ Analysis tables:
 - `support_metrics.parquet`
 - `analysis_runs.parquet`
 
+Historical tables:
+
+- `history_runs.parquet`
+- `history_windows.parquet`
+- `history_item_index.parquet`
+- `history_narrative_clusters.parquet`
+- `history_cluster_memberships.parquet`
+- `history_stance_labels.parquet`
+- `history_temporal_metrics.parquet`
+- `history_coverage_gaps.parquet`
+
 Review files:
 
 - `review/narrative_overrides.csv`
@@ -552,6 +613,11 @@ Reports:
 - `reports/report_<run_id>_tables/*.csv`
 - `reports/openclaw/<run_id>/bundle.json`
 - `reports/openclaw/<run_id>/brief.md`
+- `reports/history/<history_run_id>/history_report.md`
+- `reports/history/<history_run_id>/history_report.html`
+- `reports/history/<history_run_id>/tables/*.csv`
+- `reports/openclaw/<history_run_id>/bundle.json`
+- `reports/openclaw/<history_run_id>/brief.md`
 
 Important report exports include:
 
@@ -598,6 +664,7 @@ The current test suite covers:
 - normalization, propagation tables, and merged snapshots
 - analysis helpers and support metrics
 - review override application
+- historical monthly windows, resume behavior, temporal tables, history reports, and OpenClaw history bundles
 
 ## CI
 
@@ -649,6 +716,7 @@ Platform-specific limits:
 - Telegram web collection only works for public `t.me/s/...` feeds.
 - Telegram propagation coverage is limited to visible forwards or quoted surfaces available to the current collector.
 - Telegram MTProto now orders nested replies more defensively and scales fallback scan size from the visible thread size, but the scan is still bounded and can miss very large discussion threads.
+- Telegram MTProto history mode uses `history.max_items_per_window` instead of the normal page size for monthly source-message collection. Discussion comments are collected best-effort up to `history.max_comments_per_post`; if the visible reply count is larger than extracted comments, the run records a coverage warning.
 - Telegram Bot API only sees updates currently available to the bot. It does not backfill history.
 - X API reply coverage depends on the current search access window. With `search_scope: recent`, older replies can be missing.
 - X web collection can scrape public profile posts, but public reply visibility is often shallower than the reply counter suggests unless an authenticated browser session is used. In the April 13, 2026 smoke run against `https://x.com/OpenAI`, visible counters (`386`, `762`) were preserved while reply article extraction stayed empty.
