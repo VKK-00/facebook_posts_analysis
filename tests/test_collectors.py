@@ -3100,6 +3100,8 @@ def test_instagram_web_post_payload_merges_script_comment_fallback() -> None:
         "script_comments": 2,
         "target_script_comments": 0,
         "all_script_comments": 2,
+        "shell_text_comments": 0,
+        "fallback_comments": 2,
         "merged_comments": 2,
         "script_comments_source": "global",
     }
@@ -3139,6 +3141,8 @@ def test_instagram_web_post_payload_prefers_target_serialized_comments() -> None
         "script_comments": 1,
         "target_script_comments": 1,
         "all_script_comments": 1,
+        "shell_text_comments": 0,
+        "fallback_comments": 1,
         "merged_comments": 1,
         "script_comments_source": "target_media",
     }
@@ -3167,6 +3171,90 @@ def test_instagram_web_post_payload_keeps_global_serialized_fallback_without_tar
     assert payload["comment_extraction_sources"]["script_comments_source"] == "global"
     assert payload["comment_extraction_sources"]["target_script_comments"] == 0
     assert [comment["comment_id"] for comment in payload["comments"]] == ["global-c1"]
+
+
+def test_instagram_web_extracts_shell_text_comments_without_main_caption() -> None:
+    body_text = """
+Log In
+Sign Up
+Never miss a post from starbucks
+starbucks
+•
+Follow
+starbucks
+592w
+Good friends. Good laughs. #ThankfulThursday #regram @a.kela
+urbaezgary
+43w
+Nice post @subject_handle
+Like
+Reply
+jonpremosch
+433w
+Love this
+See translation
+Like
+Reply
+"""
+
+    comments = InstagramWebCollector._extract_shell_text_comments(body_text, source_username="starbucks")
+
+    assert [comment["author_username"] for comment in comments] == ["urbaezgary", "jonpremosch"]
+    assert [comment["text"] for comment in comments] == ["Nice post @subject_handle", "Love this"]
+    assert all("Good friends" not in comment["text"] for comment in comments)
+    assert comments[0]["raw_text"] == "urbaezgary\n43w\nNice post @subject_handle"
+
+
+def test_instagram_web_post_payload_merges_shell_text_comments_without_duplicates() -> None:
+    config = _instagram_web_config()
+    config.source.source_name = "starbucks"
+    collector = InstagramWebCollector(config)
+
+    payload = collector._select_comments_for_post_payload(
+        {
+            "comments": [],
+            "script_comments": [
+                {
+                    "comment_id": "17961429410948295",
+                    "text": "Nice post @subject_handle",
+                    "raw_text": "Nice post @subject_handle",
+                    "author_username": "urbaezgary",
+                }
+            ],
+            "target_script_comments": [
+                {
+                    "comment_id": "17961429410948295",
+                    "text": "Nice post @subject_handle",
+                    "raw_text": "Nice post @subject_handle",
+                    "author_username": "urbaezgary",
+                }
+            ],
+            "shell_body_text": """
+Log In
+Sign Up
+starbucks
+592w
+Good friends. Good laughs.
+urbaezgary
+43w
+Nice post @subject_handle
+Like
+Reply
+nadiasgs
+578w
+@liidiaa21
+Like
+Reply
+""",
+        }
+    )
+
+    assert payload["comment_extraction_sources"]["script_comments_source"] == "target_media"
+    assert payload["comment_extraction_sources"]["shell_text_comments"] == 2
+    assert payload["comment_extraction_sources"]["fallback_comments"] == 2
+    assert [comment["author_username"] for comment in payload["comments"]] == ["urbaezgary", "nadiasgs"]
+    assert [comment["text"] for comment in payload["comments"]] == ["Nice post @subject_handle", "@liidiaa21"]
+    assert payload["comments"][0]["comment_id"] == "17961429410948295"
 
 
 def test_instagram_web_post_payload_warnings_explain_hidden_comments() -> None:

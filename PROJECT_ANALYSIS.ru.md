@@ -1331,3 +1331,62 @@ Target media sample подтвердил, что это валидный matchin
 - comments были взяты из target media path, а не из unrelated recommended media;
 - DOM path всё ещё слабый для этой страницы: body text показывает login/signup shell и больше видимых строк, но текущие DOM selectors не извлекли их как structured comments;
 - следующий реальный data-quality gap для Instagram: улучшать DOM comment extraction для login/signup shell detail pages, где текст comments видим в body, но не лежит в текущих `ul li` selectors.
+
+## Обновление: Instagram web shell body-text comment fallback
+
+Следующий batch усилил именно тот gap, который показал live smoke: на Instagram detail page видимый `body` может содержать comment lines, но текущие DOM selectors возвращают `dom_comments=0`.
+
+Что изменено:
+
+- `_extract_post_payload(...)` теперь передаёт ограниченный `bodyText.slice(0, 12000)` во внутренний Python selection layer;
+- добавлен helper `_extract_shell_text_comments(...)`;
+- helper ищет простые блоки вида `author_username -> relative age -> comment text -> Like/Reply`;
+- main post caption от configured source пропускается, чтобы не превратить caption в comment;
+- shell comments добавляются только как fallback layer, когда DOM comments не найдены;
+- если serialized comments уже есть, shell comments объединяются с ними без дублей по сигнатуре `author_username + text`;
+- `comment_extraction_sources` теперь дополнительно показывает:
+  - `shell_text_comments`;
+  - `fallback_comments`.
+
+Почему выбран такой подход:
+
+- это закрывает конкретный observed gap без изменения public config schema;
+- парсер находится на Python-side, поэтому его можно тестировать без браузера;
+- fallback не пытается угадывать nested replies и не строит timestamps из relative age;
+- comments из serialized target media остаются приоритетнее, потому что у них стабильные native `comment_id`;
+- shell fallback нужен как recovery path, когда Instagram показывает текст в login/signup shell, но не отдаёт удобные DOM nodes.
+
+Ограничения:
+
+- body text parsing остаётся эвристикой и зависит от текущего Instagram UI;
+- relative age вроде `43w` сохраняется только в `raw_text`, а `created_at` не заполняется;
+- nested replies не выводятся из shell layout, потому что parent signal там не надёжен;
+- fallback ограничен первыми 12000 символами body text, чтобы не тащить слишком большой raw shell в extractor memory.
+
+Проверка:
+
+- добавлены unit tests на исключение main caption;
+- добавлены unit tests на merge serialized + shell comments без дублей;
+- следующий live smoke должен показать больше `merged_comments` на Starbucks fixture, если body shell всё ещё содержит видимые comments.
+
+Live smoke после shell fallback:
+
+- target URL: `https://www.instagram.com/p/werA7gxc8Y/`;
+- configured source: `starbucks`;
+- direct extractor path: `_extract_post_payload(...)`;
+- `dom_comments=0`;
+- `script_comments=2`;
+- `target_script_comments=2`;
+- `all_script_comments=2`;
+- `shell_text_comments=15`;
+- `fallback_comments=15`;
+- `merged_comments=15`;
+- `script_comments_source=target_media`.
+
+Что это значит:
+
+- target-aware serialized comments сохранили приоритет и дали первые 2 comments со стабильными native ids;
+- shell body-text fallback добавил ещё 13 visible comments без дублирования первых двух по `author_username + text`;
+- main Starbucks caption не попал в comments;
+- `login_wall_detected=true` внутри detail page `page_state` остаётся ожидаемым: authenticated browser получает shell text, но сама страница всё равно содержит login/signup wrapper;
+- это улучшение не делает Instagram DOM extraction полной, но закрывает конкретный data-quality gap, где comments видны в body text и раньше терялись.

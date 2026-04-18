@@ -666,6 +666,7 @@ class InstagramWebCollector(BaseCollector):
                 comments,
                 script_comments: scriptComments,
                 target_script_comments: scriptCommentSets.target_comments,
+                shell_body_text: bodyText.slice(0, 12000),
                 comment_extraction_sources: {
                   dom_comments: comments.length,
                   script_comments: scriptComments.length,
@@ -691,7 +692,21 @@ class InstagramWebCollector(BaseCollector):
         target_script_comments = payload.get("target_script_comments") or []
         script_comments = target_script_comments if target_script_comments else all_script_comments
         script_comments_source = "target_media" if target_script_comments else "global"
-        merged_comments = self._merge_comment_candidates(dom_comments, script_comments)
+        raw_shell_comments = payload.get("shell_text_comments")
+        shell_text_comments = (
+            raw_shell_comments
+            if isinstance(raw_shell_comments, list)
+            else self._extract_shell_text_comments(
+                clean_text(payload.get("shell_body_text")),
+                source_username=self._expected_source_username(),
+            )
+        )
+        fallback_comments = (
+            script_comments
+            if dom_comments
+            else self._merge_fallback_comment_candidates(script_comments, shell_text_comments)
+        )
+        merged_comments = self._merge_comment_candidates(dom_comments, fallback_comments)
         return {
             "comments": merged_comments,
             "script_comments": script_comments,
@@ -700,6 +715,8 @@ class InstagramWebCollector(BaseCollector):
                 "script_comments": len(script_comments),
                 "target_script_comments": len(target_script_comments),
                 "all_script_comments": len(all_script_comments),
+                "shell_text_comments": len(shell_text_comments),
+                "fallback_comments": len(fallback_comments),
                 "merged_comments": len(merged_comments),
                 "script_comments_source": script_comments_source,
             },
@@ -1458,6 +1475,33 @@ class InstagramWebCollector(BaseCollector):
                 merged[comment_id] = normalized
         return [merged[comment_id] for comment_id in order if comment_id in merged]
 
+    @classmethod
+    def _merge_fallback_comment_candidates(
+        cls,
+        script_comments: list[dict[str, Any]],
+        shell_text_comments: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        seen_signatures: set[str] = set()
+        index = 0
+        for group in (script_comments, shell_text_comments):
+            for candidate in group:
+                normalized = cls._normalize_comment_payload_item(candidate, index=index)
+                index += 1
+                if normalized is None:
+                    continue
+                comment_id = str(normalized.get("comment_id") or "").strip()
+                signature = cls._comment_signature(normalized)
+                if (comment_id and comment_id in seen_ids) or (signature and signature in seen_signatures):
+                    continue
+                merged.append(normalized)
+                if comment_id:
+                    seen_ids.add(comment_id)
+                if signature:
+                    seen_signatures.add(signature)
+        return merged
+
     @staticmethod
     def _comment_candidate_score(item: dict[str, Any]) -> int:
         score = 0
@@ -1476,6 +1520,67 @@ class InstagramWebCollector(BaseCollector):
         return score
 
     @classmethod
+    def _extract_shell_text_comments(cls, body_text: str, *, source_username: str) -> list[dict[str, Any]]:
+        lines = cls._shell_text_lines(body_text)
+        source = instagram_username_from_reference(source_username) or ""
+        comments: list[dict[str, Any]] = []
+        index = 0
+        while index < len(lines):
+            author_username = instagram_username_from_reference(lines[index])
+            if not author_username:
+                index += 1
+                continue
+            time_index = cls._find_shell_time_index(lines, index)
+            if time_index < 0:
+                index += 1
+                continue
+            next_index = time_index + 1
+            text_lines: list[str] = []
+            while next_index < len(lines):
+                if instagram_username_from_reference(lines[next_index]) and cls._find_shell_time_index(lines, next_index) > -1:
+                    break
+                if not cls._is_shell_comment_noise(lines[next_index]):
+                    text_lines.append(lines[next_index])
+                next_index += 1
+            text = clean_text(" ".join(text_lines))
+            is_initial_source_caption = bool(source and author_username == source and not comments)
+            if text and not is_initial_source_caption:
+                comments.append(
+                    {
+                        "comment_id": f"shell:{stable_id(author_username, lines[time_index], text)}",
+                        "reply_to_comment_id": "",
+                        "created_at": None,
+                        "text": text,
+                        "raw_text": "\n".join([author_username, lines[time_index], *text_lines]),
+                        "author_name": author_username,
+                        "author_username": author_username,
+                        "like_count": "",
+                    }
+                )
+            index = max(next_index, index + 1)
+        return comments
+
+    @classmethod
+    def _find_shell_time_index(cls, lines: list[str], author_index: int) -> int:
+        max_index = min(len(lines), author_index + 6)
+        for index in range(author_index + 1, max_index):
+            if cls._is_shell_time_line(lines[index]):
+                return index
+            if instagram_username_from_reference(lines[index]) and not cls._is_shell_comment_noise(lines[index]):
+                return -1
+        return -1
+
+    @staticmethod
+    def _shell_text_lines(body_text: str) -> list[str]:
+        return [line.strip() for line in body_text.replace("\xa0", "\n").splitlines() if line.strip()]
+
+    @classmethod
+    def _comment_signature(cls, item: dict[str, Any]) -> str:
+        author_username = instagram_username_from_reference(item.get("author_username")) or ""
+        text = clean_text(item.get("text")).casefold()
+        return f"{author_username}\0{text}" if author_username and text else ""
+
+    @classmethod
     def _derive_comment_text(cls, raw_text: str, *, author_username: str, author_name: str) -> str:
         author_tokens = {author_username.casefold(), author_name.casefold()} - {""}
         lines: list[str] = []
@@ -1492,6 +1597,29 @@ class InstagramWebCollector(BaseCollector):
         if lowered in {"reply", "see translation", "view reply", "view replies"}:
             return True
         return bool(re.fullmatch(r"\d+\s*(s|m|h|d|w)", lowered))
+
+    @classmethod
+    def _is_shell_comment_noise(cls, value: str) -> bool:
+        lowered = value.strip().casefold()
+        if lowered in {
+            "like",
+            "reply",
+            "follow",
+            "log in",
+            "sign up",
+            "see translation",
+            "view reply",
+            "view replies",
+        }:
+            return True
+        if lowered.startswith("never miss a post from ") or lowered.startswith("sign up for instagram"):
+            return True
+        return cls._is_shell_time_line(value)
+
+    @staticmethod
+    def _is_shell_time_line(value: str) -> bool:
+        lowered = value.strip().casefold()
+        return bool(re.fullmatch(r"\d+\s*(s|m|h|d|w|y)", lowered))
 
     @staticmethod
     def _resolve_search_discovery_profile(query: str) -> dict[str, str | None] | None:
