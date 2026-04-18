@@ -1569,9 +1569,45 @@ social-posts-analysis openclaw-export --config config/project.local.yaml --histo
 - collector tests покрывают Telegram MTProto history source-message limit, date-range filtering, discussion comment cap, visible-vs-extracted warning, item-limit warning и oldest-message discovery;
 - CLI tests покрывают `history-run`, `history-report`, `openclaw-export --history-run-id` и взаимоисключение `--run-id`/`--history-run-id`.
 
+## Обновление: history coverage score и turning-point months
+
+После базового Historical Profile Intelligence v1 добавлен следующий слой качества исторического отчёта.
+
+Что изменено:
+
+- [src/social_posts_analysis/history.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\history.py)
+  Добавлены helper-функции `history_window_records(...)`, `history_coverage_summary(...)` и `history_stance_turning_points(...)`.
+- [src/social_posts_analysis/openclaw.py](C:\Coding projects\facebook_posts_analysis\src\social_posts_analysis\openclaw.py)
+  History bundle теперь отдаёт monthly windows с `coverage_score`, `coverage_summary` и реальные month-over-month `top_stance_shifts`.
+- [tests/test_history.py](C:\Coding projects\facebook_posts_analysis\tests\test_history.py)
+  Добавлен regression test, что markdown report содержит coverage score и turning-point deltas.
+- [tests/test_openclaw.py](C:\Coding projects\facebook_posts_analysis\tests\test_openclaw.py)
+  Добавлен test для OpenClaw history bundle с coverage summary и stance shift delta.
+
+Формула coverage:
+
+- `visible_comment_count = comment_count + coverage_gap_total`;
+- `coverage_score = comment_count / visible_comment_count`;
+- если successful/skipped month не имеет видимых comments, score равен `1.0`;
+- если monthly window failed, score равен `0.0`.
+
+Почему так:
+
+- `comment_count` уже отражает extracted comments в monthly window;
+- `coverage_gap_total` отражает known visible-vs-extracted gap;
+- итоговая метрика показывает не абсолютную полноту всей платформы, а именно полноту относительно видимых сигналов, которые collector смог посчитать.
+
+Turning-point logic:
+
+- берутся только rows из `history_temporal_metrics`, где `metric_kind=stance`;
+- сравниваются соседние месяцы для одинаковых `item_type`, `cluster_id`, `side_id`;
+- считаются `net_support_delta`, `support_ratio_delta`, `item_count_delta`;
+- report и OpenClaw сортируют shifts по абсолютному `net_support_delta`.
+
+Это лучше, чем прежняя сортировка по самому низкому `net_support`, потому что теперь turning point означает изменение между месяцами, а не просто плохой или хороший месяц.
+
 Следующий логичный batch:
 
 - live smoke на Telegram MTProto public channel за 2-3 месяца;
 - добавить reusable smoke config для короткого history run;
-- добавить coverage_score поверх `history_windows` и `history_coverage_gaps`;
 - после Telegram smoke решать, какие web surfaces можно честно включить как limited history collectors.

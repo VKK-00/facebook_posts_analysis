@@ -521,6 +521,10 @@ In v1, the production-quality historical collector target is `telegram_mtproto`.
 - `reports/history/<history_run_id>/history_report.html`
 - `reports/history/<history_run_id>/tables/*.csv`
 
+The report includes a comment coverage score for each month. The score is `extracted_comments / visible_comments`, where `visible_comments` is the extracted count plus the known visible-vs-extracted gap. A failed monthly window gets `coverage_score=0.0`; a successful month with no visible comments gets `coverage_score=1.0`.
+
+The report also lists top turning-point months from real month-over-month stance changes. These rows compare neighboring monthly `stance` metrics for the same item type and side, then sort by the absolute `net_support_delta`.
+
 The historical tables are separate from the current snapshot tables. Existing `posts`, `comments`, `propagations`, `match_hits`, and `observed_sources` semantics are not changed.
 
 ### OpenClaw File Export
@@ -544,7 +548,7 @@ For historical runs, use:
 social-posts-analysis openclaw-export --config config/project.local.yaml --history-run-id <history_run_id>
 ```
 
-Historical bundles use schema version `openclaw.social_posts_analysis.history.v1` and include monthly windows, temporal metrics, narrative clusters, stance shifts, coverage gaps, report paths, and deterministic next actions. `--run-id` and `--history-run-id` are mutually exclusive.
+Historical bundles use schema version `openclaw.social_posts_analysis.history.v1` and include monthly windows with `coverage_score`, temporal metrics, narrative clusters, month-over-month stance shifts, coverage summary, coverage gaps, report paths, and deterministic next actions. `--run-id` and `--history-run-id` are mutually exclusive.
 
 This v1 contract is intentionally `CLI + files`. It does not start an HTTP server, webhook listener, MCP server, browser session, or Claude/OpenClaw API call. OpenClaw can run the CLI as a local process and then read `bundle.json` without knowing the internal repository layout.
 

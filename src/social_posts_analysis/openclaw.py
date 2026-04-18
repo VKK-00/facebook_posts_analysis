@@ -10,6 +10,7 @@ from typing import Any
 import polars as pl
 
 from .config import ProjectConfig
+from .history import history_coverage_summary, history_stance_turning_points, history_window_records
 from .paths import ProjectPaths
 from .utils import read_json, utc_now_iso
 
@@ -169,8 +170,9 @@ class OpenClawExportService:
                 "start": run_row.get("start"),
                 "end": run_row.get("end"),
                 "window": run_row.get("window"),
-                "windows": _frame_records(windows, limit=120),
+                "windows": history_window_records(windows, limit=120),
                 "temporal_metrics": _frame_records(temporal_metrics, limit=200),
+                "coverage_summary": history_coverage_summary(windows),
                 "coverage_gaps": _frame_records(coverage_gaps, limit=100),
                 "top_stance_shifts": self._top_history_stance_shifts(temporal_metrics),
                 "top_narratives": _frame_records(clusters, limit=50),
@@ -559,12 +561,7 @@ class OpenClawExportService:
         }
 
     def _top_history_stance_shifts(self, temporal_metrics: pl.DataFrame) -> list[dict[str, Any]]:
-        if temporal_metrics.is_empty() or "metric_kind" not in temporal_metrics.columns:
-            return []
-        stance = temporal_metrics.filter(pl.col("metric_kind") == "stance")
-        if stance.is_empty() or "net_support" not in stance.columns:
-            return []
-        return _frame_records(stance.sort("net_support").head(20), limit=20)
+        return history_stance_turning_points(temporal_metrics, limit=20)
 
     def _history_next_actions(
         self,

@@ -212,20 +212,20 @@ def test_openclaw_export_builds_history_bundle(project_paths) -> None:
     ).write_parquet(project_paths.processed_root / "history_windows.parquet")
     pl.DataFrame(
         {
-            "history_run_id": [history_run_id],
-            "window_id": ["202602"],
-            "item_type": ["comment"],
-            "cluster_id": ["comment-0"],
-            "side_id": ["side_a"],
-            "metric_kind": ["stance"],
-            "item_count": [8],
-            "support_count": [1],
-            "oppose_count": [4],
-            "neutral_count": [2],
-            "unclear_count": [1],
-            "support_ratio": [0.125],
-            "net_support": [-3],
-            "engagement_total": [12],
+            "history_run_id": [history_run_id, history_run_id],
+            "window_id": ["202601", "202602"],
+            "item_type": ["comment", "comment"],
+            "cluster_id": ["", ""],
+            "side_id": ["side_a", "side_a"],
+            "metric_kind": ["stance", "stance"],
+            "item_count": [5, 8],
+            "support_count": [3, 1],
+            "oppose_count": [1, 4],
+            "neutral_count": [1, 2],
+            "unclear_count": [0, 1],
+            "support_ratio": [0.6, 0.125],
+            "net_support": [2, -3],
+            "engagement_total": [7, 12],
         }
     ).write_parquet(project_paths.processed_root / "history_temporal_metrics.parquet")
     pl.DataFrame(
@@ -250,4 +250,7 @@ def test_openclaw_export_builds_history_bundle(project_paths) -> None:
     assert bundle["counts"]["windows"] == 2
     assert bundle["counts"]["posts"] == 5
     assert bundle["history"]["windows"][1]["coverage_gap_total"] == 1
+    assert bundle["history"]["coverage_summary"]["lowest_windows"][0]["window_id"] == "202602"
     assert bundle["history"]["top_stance_shifts"][0]["window_id"] == "202602"
+    assert bundle["history"]["top_stance_shifts"][0]["previous_window_id"] == "202601"
+    assert bundle["history"]["top_stance_shifts"][0]["net_support_delta"] == -5

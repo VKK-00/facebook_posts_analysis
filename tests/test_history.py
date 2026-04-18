@@ -197,6 +197,27 @@ def test_history_report_writes_markdown_html_and_csv(project_config, project_pat
     assert (project_paths.reports_root / "history/hist-report/tables/history_temporal_metrics.csv").exists()
 
 
+def test_history_report_includes_coverage_score_and_turning_point_deltas(project_config, project_paths) -> None:
+    _write_history_processed_fixture(project_paths, history_run_id="hist-turning", source_kind="feed")
+    windows_path = project_paths.processed_root / "history_windows.parquet"
+    windows = pl.read_parquet(windows_path).with_columns(
+        pl.when(pl.col("window_id") == "202602")
+        .then(pl.lit(3))
+        .otherwise(pl.col("coverage_gap_total"))
+        .alias("coverage_gap_total")
+    )
+    windows.write_parquet(windows_path)
+    HistoryAnalysisService(project_config, project_paths).run(history_run_id="hist-turning")
+
+    HistoryReportService(project_config, project_paths).run(history_run_id="hist-turning")
+
+    markdown_text = (project_paths.reports_root / "history/hist-turning/history_report.md").read_text(encoding="utf-8")
+    assert "Average coverage score:" in markdown_text
+    assert "Lowest coverage months:" in markdown_text
+    assert "net_support_delta=-2" in markdown_text
+    assert "previous=202601" in markdown_text
+
+
 def test_history_report_person_monitor_includes_authored_and_mention_sections(project_config, project_paths) -> None:
     _write_history_processed_fixture(project_paths, history_run_id="hist-report-pm", source_kind="person_monitor")
     pl.DataFrame(

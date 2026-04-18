@@ -458,6 +458,8 @@ class HistoryReportService:
         metrics = _load_history_table(self.paths, "history_temporal_metrics", history_run_id)
         gaps = _load_history_table(self.paths, "history_coverage_gaps", history_run_id)
         clusters = _load_history_table(self.paths, "history_narrative_clusters", history_run_id)
+        coverage_summary = history_coverage_summary(windows)
+        turning_points = history_stance_turning_points(metrics, limit=5)
 
         csv_paths = []
         for table_name, frame in {
@@ -472,7 +474,16 @@ class HistoryReportService:
 
         markdown_path = output_dir / "history_report.md"
         html_path = output_dir / "history_report.html"
-        markdown_text = self._markdown(history_run_id, history_runs, windows, metrics, gaps, clusters)
+        markdown_text = self._markdown(
+            history_run_id,
+            history_runs,
+            windows,
+            metrics,
+            gaps,
+            clusters,
+            coverage_summary,
+            turning_points,
+        )
         markdown_path.write_text(markdown_text, encoding="utf-8")
         html_path.write_text(markdown.markdown(markdown_text, extensions=["tables", "fenced_code"]), encoding="utf-8")
         return [markdown_path, html_path, *csv_paths]
@@ -485,6 +496,8 @@ class HistoryReportService:
         metrics: pl.DataFrame,
         gaps: pl.DataFrame,
         clusters: pl.DataFrame,
+        coverage_summary: dict[str, Any],
+        turning_points: list[dict[str, Any]],
     ) -> str:
         run_row = history_runs.to_dicts()[0] if not history_runs.is_empty() else {}
         source_kind = str(run_row.get("source_kind") or "feed")
@@ -508,16 +521,28 @@ class HistoryReportService:
             "",
             "## Audience Comment Trend",
             f"- Coverage gap rows: {gaps.height}",
+            f"- Average coverage score: {coverage_summary.get('average_coverage_score', 0.0)}",
+            (
+                "- Overall comment coverage: "
+                f"{coverage_summary.get('overall_coverage_score', 0.0)} "
+                f"(extracted={coverage_summary.get('extracted_comment_count', 0)}, "
+                f"visible={coverage_summary.get('visible_comment_count', 0)}, "
+                f"gap={coverage_summary.get('coverage_gap_total', 0)})"
+            ),
+            "- Lowest coverage months: "
+            + _format_lowest_coverage_months(coverage_summary.get("lowest_windows") or []),
             "",
             "## Top Turning-Point Months",
         ]
-        if metrics.is_empty() or "net_support" not in metrics.columns:
+        if not turning_points:
             lines.append("- No temporal stance metrics available.")
         else:
-            for row in metrics.sort("net_support").head(5).to_dicts():
+            for row in turning_points:
                 lines.append(
                     f"- {row.get('window_id')}: {row.get('metric_kind')} {row.get('item_type')} "
-                    f"net_support={row.get('net_support')}"
+                    f"side={row.get('side_id')} previous={row.get('previous_window_id')} "
+                    f"net_support_delta={row.get('net_support_delta')} "
+                    f"support_ratio_delta={row.get('support_ratio_delta')}"
                 )
         if source_kind == "person_monitor":
             lines.extend(
@@ -586,6 +611,114 @@ def _load_history_table(paths: ProjectPaths, table_name: str, history_run_id: st
     return frame.filter(pl.col("history_run_id") == history_run_id)
 
 
+def history_window_records(windows: pl.DataFrame, *, limit: int | None = None) -> list[dict[str, Any]]:
+    if windows.is_empty():
+        return []
+    records = windows.head(limit).to_dicts() if limit is not None else windows.to_dicts()
+    return [
+        {
+            **record,
+            "coverage_score": _history_window_coverage_score(record),
+        }
+        for record in records
+    ]
+
+
+def history_coverage_summary(windows: pl.DataFrame) -> dict[str, Any]:
+    records = history_window_records(windows)
+    if not records:
+        return {
+            "average_coverage_score": 0.0,
+            "overall_coverage_score": 0.0,
+            "extracted_comment_count": 0,
+            "visible_comment_count": 0,
+            "coverage_gap_total": 0,
+            "lowest_windows": [],
+        }
+
+    extracted_comment_count = sum(_int_value(row.get("comment_count"), 0) for row in records)
+    coverage_gap_total = sum(_int_value(row.get("coverage_gap_total"), 0) for row in records)
+    visible_comment_count = extracted_comment_count + coverage_gap_total
+    overall_coverage_score = (
+        round(extracted_comment_count / visible_comment_count, 4)
+        if visible_comment_count > 0
+        else 1.0
+    )
+    average_coverage_score = round(sum(float(row["coverage_score"]) for row in records) / len(records), 4)
+    lowest_windows = sorted(records, key=lambda row: (float(row["coverage_score"]), str(row.get("window_id") or "")))[:5]
+    return {
+        "average_coverage_score": average_coverage_score,
+        "overall_coverage_score": overall_coverage_score,
+        "extracted_comment_count": extracted_comment_count,
+        "visible_comment_count": visible_comment_count,
+        "coverage_gap_total": coverage_gap_total,
+        "lowest_windows": [
+            {
+                "window_id": row.get("window_id"),
+                "coverage_score": row.get("coverage_score"),
+                "comment_count": row.get("comment_count"),
+                "coverage_gap_total": row.get("coverage_gap_total"),
+                "status": row.get("status"),
+            }
+            for row in lowest_windows
+        ],
+    }
+
+
+def history_stance_turning_points(metrics: pl.DataFrame, *, limit: int = 10) -> list[dict[str, Any]]:
+    required = {"metric_kind", "window_id", "item_type", "side_id", "net_support", "support_ratio", "item_count"}
+    if metrics.is_empty() or not required.issubset(set(metrics.columns)):
+        return []
+
+    stance_rows = metrics.filter(pl.col("metric_kind") == "stance").to_dicts()
+    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for row in stance_rows:
+        key = (
+            str(row.get("item_type") or ""),
+            str(row.get("cluster_id") or ""),
+            str(row.get("side_id") or ""),
+        )
+        grouped.setdefault(key, []).append(row)
+
+    turning_points: list[dict[str, Any]] = []
+    for rows in grouped.values():
+        ordered_rows = sorted(rows, key=lambda row: str(row.get("window_id") or ""))
+        for previous, current in zip(ordered_rows, ordered_rows[1:], strict=False):
+            net_support_delta = _int_value(current.get("net_support"), 0) - _int_value(previous.get("net_support"), 0)
+            support_ratio_delta = round(
+                _float_value(current.get("support_ratio"), 0.0) - _float_value(previous.get("support_ratio"), 0.0),
+                4,
+            )
+            item_count_delta = _int_value(current.get("item_count"), 0) - _int_value(previous.get("item_count"), 0)
+            if net_support_delta == 0 and support_ratio_delta == 0.0 and item_count_delta == 0:
+                continue
+            turning_points.append(
+                {
+                    "metric_kind": "stance_shift",
+                    "previous_window_id": str(previous.get("window_id") or ""),
+                    "window_id": str(current.get("window_id") or ""),
+                    "item_type": str(current.get("item_type") or ""),
+                    "cluster_id": str(current.get("cluster_id") or ""),
+                    "side_id": str(current.get("side_id") or ""),
+                    "previous_net_support": _int_value(previous.get("net_support"), 0),
+                    "current_net_support": _int_value(current.get("net_support"), 0),
+                    "net_support_delta": net_support_delta,
+                    "previous_support_ratio": _float_value(previous.get("support_ratio"), 0.0),
+                    "current_support_ratio": _float_value(current.get("support_ratio"), 0.0),
+                    "support_ratio_delta": support_ratio_delta,
+                    "item_count_delta": item_count_delta,
+                }
+            )
+    return sorted(
+        turning_points,
+        key=lambda row: (
+            -abs(_int_value(row.get("net_support_delta"), 0)),
+            -abs(_float_value(row.get("support_ratio_delta"), 0.0)),
+            str(row.get("window_id") or ""),
+        ),
+    )[:limit]
+
+
 def _list_value(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -619,6 +752,36 @@ def _int_value(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+def _float_value(value: Any, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _history_window_coverage_score(row: dict[str, Any]) -> float:
+    if str(row.get("status") or "") == "failed":
+        return 0.0
+    extracted = _int_value(row.get("comment_count"), 0)
+    gap = _int_value(row.get("coverage_gap_total"), 0)
+    visible = extracted + gap
+    if visible <= 0:
+        return 1.0
+    return round(max(0.0, min(1.0, extracted / visible)), 4)
+
+
+def _format_lowest_coverage_months(rows: list[Any]) -> str:
+    if not rows:
+        return "none"
+    return ", ".join(
+        f"{row.get('window_id')}={row.get('coverage_score')}"
+        for row in rows
+        if isinstance(row, dict)
+    ) or "none"
 
 
 def _metric_item_total(metrics: pl.DataFrame, metric_kind: str) -> int:
